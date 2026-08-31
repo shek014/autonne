@@ -1,5 +1,7 @@
 # autonne
 
+[![CI](https://github.com/shek014/autonne/actions/workflows/ci.yml/badge.svg)](https://github.com/shek014/autonne/actions/workflows/ci.yml)
+
 Truncated singular value decomposition and Hermitian eigendecomposition for
 small dense complex matrices.
 
@@ -37,6 +39,8 @@ With `k = min(rows, cols)`: `U_out` is `rows` by `k`, `V_out` is `cols` by `k`,
 both column-major, and `S_out` holds `k` singular values in descending order.
 `V` is returned as `V`, not conjugate-transposed. A `false` return means the
 caller should take its fallback route and must not read the outputs.
+
+`eigh` returns eigenvalues in ascending order, following the LAPACK convention.
 
 Raw buffers cross the boundary, and no public header names a third-party type.
 
