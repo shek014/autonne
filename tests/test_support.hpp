@@ -1,0 +1,217 @@
+// Copyright 2026 The autonne Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Test fixtures built from a chosen spectrum.
+//
+// Every case here is assembled forwards -- pick a spectrum and two unitaries,
+// multiply out the matrix -- so the factorisation handed to the harness is
+// correct by construction and any rejection is the harness's own doing.
+
+#ifndef AUTONNE_TESTS_TEST_SUPPORT_HPP
+#define AUTONNE_TESTS_TEST_SUPPORT_HPP
+
+#include <bit>
+#include <complex>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+#include "autonne/autonne.hpp"
+
+namespace autonne_test {
+
+using autonne::MatrixOrder;
+
+using Complex = std::complex<double>;
+
+// Deterministic, self-contained, and identical on every platform: the corpus
+// must not shift when a standard library changes its distribution internals.
+class Lcg {
+ public:
+  explicit Lcg(std::uint64_t seed) : state_(seed) { next_bits(); }
+
+  // Uniform in [-1, 1).
+  double next_uniform() {
+    const std::uint64_t x = next_bits() >> 11;  // 53 significant bits
+    return static_cast<double>(x) * (2.0 / 9007199254740992.0) - 1.0;
+  }
+
+  Complex next_complex() {
+    const double re = next_uniform();
+    const double im = next_uniform();
+    return Complex(re, im);
+  }
+
+ private:
+  std::uint64_t next_bits() {
+    state_ = state_ * UINT64_C(6364136223846793005) +
+             UINT64_C(1442695040888963407);
+    return state_;
+  }
+  std::uint64_t state_;
+};
+
+// Reinterprets a bit pattern as a double. NaN and infinity are built this way
+// rather than computed (0.0/0.0, 1.0/0.0) because under -ffast-math the
+// compiler may fold such an expression to something finite before it ever
+// reaches the guard under test.
+constexpr double bits_to_double(std::uint64_t bits) {
+  return std::bit_cast<double>(bits);
+}
+
+constexpr double quiet_nan() { return bits_to_double(UINT64_C(0x7FF8000000000000)); }
+constexpr double signaling_nan() { return bits_to_double(UINT64_C(0x7FF0000000000001)); }
+constexpr double positive_inf() { return bits_to_double(UINT64_C(0x7FF0000000000000)); }
+constexpr double negative_inf() { return bits_to_double(UINT64_C(0xFFF0000000000000)); }
+constexpr double smallest_subnormal() { return bits_to_double(UINT64_C(0x0000000000000001)); }
+constexpr double largest_normal() { return bits_to_double(UINT64_C(0x7FEFFFFFFFFFFFFF)); }
+
+// Launders a value through memory so the optimiser cannot carry a
+// compile-time-known bit pattern into the caller and reason about it.
+inline double opaque(double x) {
+  volatile double v = x;
+  return v;
+}
+
+// Applies H = I - 2 v v^* / (v^* v) to the n x n column-major matrix A, in
+// place. H is unitary for any nonzero complex v, so a product of these is a
+// unitary with no orthogonalisation step to go wrong.
+inline void apply_householder(std::vector<Complex>& a, int n,
+                              const std::vector<Complex>& v) {
+  double beta = 0.0;
+  for (int i = 0; i < n; ++i) {
+    beta += v[static_cast<std::size_t>(i)].real() * v[static_cast<std::size_t>(i)].real() +
+            v[static_cast<std::size_t>(i)].imag() * v[static_cast<std::size_t>(i)].imag();
+  }
+  if (beta == 0.0) return;
+  for (int j = 0; j < n; ++j) {
+    const std::size_t col = static_cast<std::size_t>(j) * static_cast<std::size_t>(n);
+    Complex w(0.0, 0.0);
+    for (int i = 0; i < n; ++i) {
+      w += std::conj(v[static_cast<std::size_t>(i)]) * a[col + static_cast<std::size_t>(i)];
+    }
+    const Complex f = (2.0 / beta) * w;
+    for (int i = 0; i < n; ++i) {
+      a[col + static_cast<std::size_t>(i)] -= f * v[static_cast<std::size_t>(i)];
+    }
+  }
+}
+
+// n x n unitary, column-major, as a product of two complex Householders.
+inline std::vector<Complex> make_unitary(int n, std::uint64_t seed) {
+  const std::size_t sn = static_cast<std::size_t>(n);
+  std::vector<Complex> a(sn * sn, Complex(0.0, 0.0));
+  for (int i = 0; i < n; ++i) a[static_cast<std::size_t>(i) * sn + static_cast<std::size_t>(i)] = Complex(1.0, 0.0);
+  Lcg rng(seed);
+  for (int reflector = 0; reflector < 2; ++reflector) {
+    std::vector<Complex> v(sn);
+    for (int i = 0; i < n; ++i) v[static_cast<std::size_t>(i)] = rng.next_complex();
+    apply_householder(a, n, v);
+  }
+  return a;
+}
+
+// A matrix together with the factorisation it was built from.
+struct SvdCase {
+  int rows = 0;
+  int cols = 0;
+  int k = 0;
+  MatrixOrder order = MatrixOrder::ColMajor;
+  std::vector<double> s;         // k
+  std::vector<Complex> u;        // rows x k, column-major
+  std::vector<Complex> v;        // cols x k, column-major
+  std::vector<Complex> m;        // rows x cols, laid out per `order`
+};
+
+// Builds M = U_k diag(spectrum) V_k^* with U_k, V_k the leading columns of
+// freshly generated unitaries. `spectrum` is used exactly as given, including
+// its order, so a caller can construct a deliberately mis-ordered case.
+inline SvdCase make_svd_case(int rows, int cols,
+                             const std::vector<double>& spectrum,
+                             MatrixOrder order, std::uint64_t seed) {
+  SvdCase c;
+  c.rows = rows;
+  c.cols = cols;
+  c.order = order;
+  c.k = static_cast<int>(spectrum.size());
+  c.s = spectrum;
+
+  const std::vector<Complex> u_full = make_unitary(rows, seed);
+  const std::vector<Complex> v_full = make_unitary(cols, seed + 0x9E3779B9u);
+  const std::size_t uk = static_cast<std::size_t>(rows) * static_cast<std::size_t>(c.k);
+  const std::size_t vk = static_cast<std::size_t>(cols) * static_cast<std::size_t>(c.k);
+  c.u.assign(u_full.begin(), u_full.begin() + static_cast<std::ptrdiff_t>(uk));
+  c.v.assign(v_full.begin(), v_full.begin() + static_cast<std::ptrdiff_t>(vk));
+
+  c.m.assign(static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols),
+             Complex(0.0, 0.0));
+  for (int i = 0; i < rows; ++i) {
+    for (int j = 0; j < cols; ++j) {
+      Complex acc(0.0, 0.0);
+      for (int t = 0; t < c.k; ++t) {
+        const Complex ut = c.u[static_cast<std::size_t>(t) * static_cast<std::size_t>(rows) +
+                               static_cast<std::size_t>(i)];
+        const Complex vt = c.v[static_cast<std::size_t>(t) * static_cast<std::size_t>(cols) +
+                               static_cast<std::size_t>(j)];
+        acc += ut * c.s[static_cast<std::size_t>(t)] * std::conj(vt);
+      }
+      const std::size_t idx =
+          (order == MatrixOrder::RowMajor)
+              ? static_cast<std::size_t>(i) * static_cast<std::size_t>(cols) + static_cast<std::size_t>(j)
+              : static_cast<std::size_t>(j) * static_cast<std::size_t>(rows) + static_cast<std::size_t>(i);
+      c.m[idx] = acc;
+    }
+  }
+  return c;
+}
+
+struct EighCase {
+  int n = 0;
+  MatrixOrder order = MatrixOrder::ColMajor;
+  std::vector<double> evals;  // n
+  std::vector<Complex> q;     // n x n, column-major
+  std::vector<Complex> a;     // n x n, laid out per `order`
+};
+
+// Builds A = Q diag(evals) Q^*, which is Hermitian to rounding.
+inline EighCase make_eigh_case(int n, const std::vector<double>& evals,
+                               MatrixOrder order, std::uint64_t seed) {
+  EighCase c;
+  c.n = n;
+  c.order = order;
+  c.evals = evals;
+  c.q = make_unitary(n, seed);
+  const std::size_t sn = static_cast<std::size_t>(n);
+  c.a.assign(sn * sn, Complex(0.0, 0.0));
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+      Complex acc(0.0, 0.0);
+      for (int t = 0; t < n; ++t) {
+        acc += c.q[static_cast<std::size_t>(t) * sn + static_cast<std::size_t>(i)] *
+               c.evals[static_cast<std::size_t>(t)] *
+               std::conj(c.q[static_cast<std::size_t>(t) * sn + static_cast<std::size_t>(j)]);
+      }
+      const std::size_t idx =
+          (order == MatrixOrder::RowMajor)
+              ? static_cast<std::size_t>(i) * sn + static_cast<std::size_t>(j)
+              : static_cast<std::size_t>(j) * sn + static_cast<std::size_t>(i);
+      c.a[idx] = acc;
+    }
+  }
+  return c;
+}
+
+}  // namespace autonne_test
+
+#endif  // AUTONNE_TESTS_TEST_SUPPORT_HPP
