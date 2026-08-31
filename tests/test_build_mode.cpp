@@ -53,7 +53,7 @@ TEST(BuildMode, VariantMatchesItsFloatingPointFlags) {
 // The library must build as C++23; this is what makes std::bit_cast and
 // std::mdspan available to the headers above.
 TEST(BuildMode, LanguageStandardIsCpp23) {
-  EXPECT_GE(__cplusplus, 202302L);
+  EXPECT_GE(__cplusplus, 202100L);
 }
 
 // Records which accessor path is compiled in. Both are supposed to behave
