@@ -100,7 +100,18 @@ TEST(FpBad, DetectsNanFromArithmetic) {
 // the point of fp_bad is that it is not.
 TEST(FpBad, StdPredicateBehaviourIsRecorded) {
   const double nan_value = opaque(quiet_nan());
-  RecordProperty("std_isnan_on_nan", std::isnan(nan_value) ? 1 : 0);
+  #if defined(__clang__)
+  #  pragma clang diagnostic push
+  #  pragma clang diagnostic ignored "-Wnan-infinity-disabled"
+  #endif
+    // Deliberate: this test records what std::isnan does when the compiler is
+    // permitted to assume NaN cannot occur. Clang correctly warns that using a
+    // NaN here is UB under -ffast-math — that is precisely what is being
+    // measured, and the same diagnostic Eigen's deleted guard produces.
+    RecordProperty("std_isnan_on_nan", std::isnan(nan_value) ? 1 : 0);
+  #if defined(__clang__)
+  #  pragma clang diagnostic pop
+  #endif
   RecordProperty("fp_bad_on_nan", fp_bad(nan_value) ? 1 : 0);
   EXPECT_TRUE(fp_bad(nan_value));
 }
