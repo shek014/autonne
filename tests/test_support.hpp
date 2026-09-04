@@ -22,6 +22,7 @@
 #define AUTONNE_TESTS_TEST_SUPPORT_HPP
 
 #include <bit>
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -252,6 +253,236 @@ inline EighCase make_eigh_case(int n, const std::vector<double>& evals,
     }
   }
   return c;
+}
+
+
+// ---------------------------------------------------------------------------
+// Kernel fixtures
+// ---------------------------------------------------------------------------
+
+// Values a kernel must never leave behind on a false return; the tests check
+// output buffers still hold them.
+constexpr Complex kSentinel(-12345.0, 6789.0);
+constexpr double kSentinelReal = -98765.0;
+
+struct SvdResult {
+  bool ok = false;
+  std::vector<Complex> u;   // rows x k, column-major
+  std::vector<double> s;    // k
+  std::vector<Complex> v;   // cols x k, column-major
+};
+
+inline SvdResult run_svd(const Complex* m, int rows, int cols,
+                         MatrixOrder order) {
+  const int k = rows < cols ? rows : cols;
+  SvdResult r;
+  r.u.assign(static_cast<std::size_t>(rows) * static_cast<std::size_t>(k), kSentinel);
+  r.s.assign(static_cast<std::size_t>(k), kSentinelReal);
+  r.v.assign(static_cast<std::size_t>(cols) * static_cast<std::size_t>(k), kSentinel);
+  r.ok = autonne::svd_thin(m, rows, cols, order, r.u.data(), r.s.data(), r.v.data());
+  return r;
+}
+
+inline SvdResult run_svd(const SvdCase& c) {
+  return run_svd(c.m.data(), c.rows, c.cols, c.order);
+}
+
+struct EighResult {
+  bool ok = false;
+  std::vector<double> evals;   // n
+  std::vector<Complex> evecs;  // n x n, column-major
+};
+
+inline EighResult run_eigh(const Complex* a, int n, MatrixOrder order) {
+  EighResult r;
+  r.evals.assign(static_cast<std::size_t>(n), kSentinelReal);
+  r.evecs.assign(static_cast<std::size_t>(n) * static_cast<std::size_t>(n), kSentinel);
+  r.ok = autonne::eigh(a, n, order, r.evals.data(), r.evecs.data());
+  return r;
+}
+
+inline EighResult run_eigh(const EighCase& c) {
+  return run_eigh(c.a.data(), c.n, c.order);
+}
+
+// Dense rows x cols matrix of uniform complex entries, column-major.
+inline std::vector<Complex> random_matrix(int rows, int cols, std::uint64_t seed) {
+  Lcg rng(seed);
+  std::vector<Complex> m(static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols));
+  for (Complex& z : m) z = rng.next_complex();
+  return m;
+}
+
+// Random Hermitian n x n, column-major: (X + X^*) / 2 for random X.
+inline std::vector<Complex> random_hermitian(int n, std::uint64_t seed) {
+  std::vector<Complex> x = random_matrix(n, n, seed);
+  const std::size_t sn = static_cast<std::size_t>(n);
+  std::vector<Complex> h(sn * sn);
+  for (std::size_t j = 0; j < sn; ++j) {
+    for (std::size_t i = 0; i < sn; ++i) {
+      h[i + j * sn] = 0.5 * (x[i + j * sn] + std::conj(x[j + i * sn]));
+    }
+    h[j + j * sn] = Complex(h[j + j * sn].real(), 0.0);
+  }
+  return h;
+}
+
+// The n x n discrete Fourier transform, unitary: F(j, k) = e^{-2 pi i j k / n} / sqrt(n).
+// Every singular value is 1, so it is the fully degenerate case.
+inline std::vector<Complex> dft_unitary(int n) {
+  const std::size_t sn = static_cast<std::size_t>(n);
+  std::vector<Complex> f(sn * sn);
+  const double two_pi = 6.283185307179586476925286766559;
+  const double scale = 1.0 / std::sqrt(static_cast<double>(n));
+  for (int k = 0; k < n; ++k) {
+    for (int j = 0; j < n; ++j) {
+      const double angle = -two_pi * static_cast<double>((j * k) % n) / static_cast<double>(n);
+      f[static_cast<std::size_t>(j) + static_cast<std::size_t>(k) * sn] =
+          Complex(scale * std::cos(angle), scale * std::sin(angle));
+    }
+  }
+  return f;
+}
+
+// Column-major product C = A (rows x inner) * B (inner x cols).
+inline std::vector<Complex> matmul(const std::vector<Complex>& a, int rows, int inner,
+                                   const std::vector<Complex>& b, int cols) {
+  const std::size_t sr = static_cast<std::size_t>(rows);
+  const std::size_t si = static_cast<std::size_t>(inner);
+  std::vector<Complex> c(sr * static_cast<std::size_t>(cols), Complex(0.0, 0.0));
+  for (int j = 0; j < cols; ++j) {
+    const std::size_t sj = static_cast<std::size_t>(j);
+    for (int t = 0; t < inner; ++t) {
+      const std::size_t st = static_cast<std::size_t>(t);
+      const Complex bt = b[st + sj * si];
+      for (int i = 0; i < rows; ++i) {
+        const std::size_t sii = static_cast<std::size_t>(i);
+        c[sii + sj * sr] += a[sii + st * sr] * bt;
+      }
+    }
+  }
+  return c;
+}
+
+// n x n matrix B = F (I + 0.1 E) with F the DFT and ||E||_F <= 1, so every
+// singular value of B lies in [0.9, 1.1]. The bound is what the relative
+// accuracy tests lean on: sigma_k(B D) and sigma_k(D B) lie in
+// [0.9, 1.1] * d_(k), whatever the scaling D.
+inline std::vector<Complex> well_conditioned_matrix(int n, std::uint64_t seed) {
+  const std::size_t sn = static_cast<std::size_t>(n);
+  std::vector<Complex> e = random_matrix(n, n, seed);
+  double norm_sq = 0.0;
+  for (const Complex& z : e) norm_sq += std::norm(z);
+  const double scale = 0.1 / std::sqrt(norm_sq);
+  for (std::size_t j = 0; j < sn; ++j) {
+    for (std::size_t i = 0; i < sn; ++i) {
+      e[i + j * sn] *= scale;
+      if (i == j) e[i + j * sn] += Complex(1.0, 0.0);
+    }
+  }
+  return matmul(dft_unitary(n), n, n, e, n);
+}
+
+// n x n Hermitian B = I + 0.1 E with E Hermitian and ||E||_F <= 1, so every
+// eigenvalue of B lies in [0.9, 1.1]; then lambda_k(D B D) lies in
+// [0.9, 1.1] * d_(k)^2 (Ostrowski).
+inline std::vector<Complex> well_conditioned_hermitian(int n, std::uint64_t seed) {
+  const std::size_t sn = static_cast<std::size_t>(n);
+  std::vector<Complex> e = random_hermitian(n, seed);
+  double norm_sq = 0.0;
+  for (const Complex& z : e) norm_sq += std::norm(z);
+  const double scale = 0.1 / std::sqrt(norm_sq);
+  for (std::size_t j = 0; j < sn; ++j) {
+    for (std::size_t i = 0; i < sn; ++i) {
+      e[i + j * sn] *= scale;
+      if (i == j) e[i + j * sn] += Complex(1.0, 0.0);
+    }
+  }
+  return e;
+}
+
+// Scales column j of the column-major rows x cols matrix by d[j].
+inline void scale_columns(std::vector<Complex>& m, int rows, int cols,
+                          const std::vector<double>& d) {
+  const std::size_t sr = static_cast<std::size_t>(rows);
+  for (int j = 0; j < cols; ++j) {
+    for (int i = 0; i < rows; ++i) {
+      m[static_cast<std::size_t>(i) + static_cast<std::size_t>(j) * sr] *=
+          d[static_cast<std::size_t>(j)];
+    }
+  }
+}
+
+// Scales row i of the column-major rows x cols matrix by d[i].
+inline void scale_rows(std::vector<Complex>& m, int rows, int cols,
+                       const std::vector<double>& d) {
+  const std::size_t sr = static_cast<std::size_t>(rows);
+  for (int j = 0; j < cols; ++j) {
+    for (int i = 0; i < rows; ++i) {
+      m[static_cast<std::size_t>(i) + static_cast<std::size_t>(j) * sr] *=
+          d[static_cast<std::size_t>(i)];
+    }
+  }
+}
+
+// The Simon-problem state (1/6) sum_x |x>|f(x)> over Z_6 x Z_6 with hidden
+// shift s = (2, 4), as a 36 x 36 matrix M(x, y) = 1/6 if y = f(x), where f(x)
+// is the lexicographic minimum of the coset x + <s>. The shift has order
+// three, so there are twelve cosets of three elements each: twelve nonzero
+// columns, mutually orthogonal, each of norm sqrt(3)/6. The exact spectrum is
+// therefore twelve copies of 1/(2 sqrt 3) and twenty-four zeros, with sum of
+// squares one. This is the structure of the matrix on which Eigen 3.4.0's
+// divide-and-conquer SVD returned a wrong spectrum (verycareful/lindblad#95);
+// the lindblad reproducer itself is not copied here.
+//
+// `residue` is added to M(0, 0) when nonzero, to mimic the rounding residue
+// the original carried. Column-major.
+inline std::vector<Complex> simon_coset_matrix(double residue = 0.0) {
+  const int d = 6;
+  const int n = d * d;
+  const int s0 = 2;
+  const int s1 = 4;
+  std::vector<Complex> m(static_cast<std::size_t>(n) * static_cast<std::size_t>(n),
+                         Complex(0.0, 0.0));
+  for (int x = 0; x < n; ++x) {
+    const int x0 = x % d;
+    const int x1 = x / d;
+    int best0 = x0;
+    int best1 = x1;
+    for (int k = 1; k < d; ++k) {
+      const int c0 = (x0 + k * s0) % d;
+      const int c1 = (x1 + k * s1) % d;
+      if (c0 < best0 || (c0 == best0 && c1 < best1)) {
+        best0 = c0;
+        best1 = c1;
+      }
+    }
+    const int y = best0 + d * best1;
+    m[static_cast<std::size_t>(x) + static_cast<std::size_t>(y) * static_cast<std::size_t>(n)] =
+        Complex(1.0 / 6.0, 0.0);
+  }
+  m[0] += Complex(residue, 0.0);
+  return m;
+}
+
+// An 8 x 8 matrix with the structure of the "poison theta" from the same
+// issue: four orthonormal columns of two entries of modulus 1/sqrt(2) each,
+// on disjoint rows, followed by columns holding a few entries sixty-odd
+// orders of magnitude smaller. The spectrum is four ones, then values below
+// 1e-48, then zeros. Eigen's Jacobi SVD under -ffast-math returned NaN inside
+// a null-space column of U on the original. Column-major.
+inline std::vector<Complex> poison_theta_like() {
+  const int n = 8;
+  std::vector<Complex> m(static_cast<std::size_t>(n) * static_cast<std::size_t>(n),
+                         Complex(0.0, 0.0));
+  const double h = 0.70710678118654752440;
+  for (int j = 0; j < 4; ++j) {
+    m[static_cast<std::size_t>(2 * j) + static_cast<std::size_t>(j) * 8] = Complex(h, 0.0);
+    m[static_cast<std::size_t>(2 * j + 1) + static_cast<std::size_t>(j) * 8] = Complex(0.0, h);
+  }
+  m[0 + 4 * 8] = Complex(1.57e-65, 0.0);
+  m[7 + 5 * 8] = Complex(0.0, 2.2e-49);
+  return m;
 }
 
 }  // namespace autonne_test

@@ -50,6 +50,10 @@ set(AUTONNE_HEADERS
   include/autonne/detail/fp_bits.hpp
   include/autonne/detail/matrix_view.hpp)
 
+# Private to the kernels; included relative to src/ and never installed.
+set(AUTONNE_PRIVATE_HEADERS
+  src/detail/kernel_common.hpp)
+
 # --- shared compile settings -------------------------------------------------
 
 add_library(autonne_warnings INTERFACE)
@@ -79,7 +83,7 @@ endif()
 
 # --- library -----------------------------------------------------------------
 
-add_library(autonne STATIC ${AUTONNE_SOURCES} ${AUTONNE_HEADERS})
+add_library(autonne STATIC ${AUTONNE_SOURCES} ${AUTONNE_HEADERS} ${AUTONNE_PRIVATE_HEADERS})
 add_library(autonne::autonne ALIAS autonne)
 
 target_include_directories(autonne
@@ -124,7 +128,9 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_verify_svd.cpp
     tests/test_verify_eigh.cpp
     tests/test_hexfloat.cpp
-    tests/test_api_stubs.cpp
+    tests/test_api.cpp
+    tests/test_svd.cpp
+    tests/test_eigh.cpp
     tests/test_build_mode.cpp)
 
   # Each variant compiles the library sources into its own binary rather than

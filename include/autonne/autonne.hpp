@@ -43,10 +43,17 @@ enum class MatrixOrder {
 //
 //   data == U_out * diag(S_out) * V_out^*
 //
-// Returns false if the factorisation could not be produced. On false the
-// caller must take its fallback path and must not read U_out, S_out or V_out;
-// their contents are unspecified. Failure is reported by the return value
-// only: this function never throws.
+// Rows and columns of `data` that are exactly zero are treated as structural:
+// the singular values they account for are exactly zero and their singular
+// vectors are canonical basis vectors. The kernel scales its input by a power
+// of two before any arithmetic, so scaling `data` by a power of two scales
+// S_out by exactly that power and leaves U_out and V_out bit for bit unchanged.
+//
+// Returns false if the factorisation could not be produced: a null pointer, a
+// non-positive dimension, a non-finite entry in `data`, an allocation failure
+// or (in principle) a failure to converge. On false nothing has been written
+// to U_out, S_out or V_out, and the caller must take its fallback path.
+// Failure is reported by the return value only: this function never throws.
 bool svd_thin(const std::complex<double>* data, int rows, int cols,
               MatrixOrder order,
               std::complex<double>* U_out, double* S_out,
@@ -54,20 +61,32 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
 
 // Eigendecomposition of a dense Hermitian complex matrix.
 //
-//   data       n x n, laid out according to `order`; only Hermitian input is
-//              meaningful, and the caller is responsible for supplying it
+//   data       n x n, laid out according to `order`
 //   evals_out  n real eigenvalues in ascending order
 //   evecs_out  n x n, column-major; column j is the eigenvector for
-//              evals_out[j]
+//              evals_out[j]. May be null when only the spectrum is wanted;
+//              the eigenvalues are then identical to those of the full call.
 //
 // so that
 //
 //   data * evecs_out == evecs_out * diag(evals_out)
 //
-// Returns false if the decomposition could not be produced. On false the
-// caller must take its fallback path and must not read evals_out or
-// evecs_out. Failure is reported by the return value only: this function
-// never throws.
+// What is decomposed is the Hermitian part (data + data^*) / 2, with the
+// imaginary parts of the diagonal discarded. For Hermitian input that is the
+// input itself, bit for bit, in either storage order; for input that is
+// Hermitian up to rounding it is the nearest Hermitian matrix in the Frobenius
+// norm. A grossly non-Hermitian input is not rejected here -- the caller's
+// verification (verify::check_eigh reports `input_hermitian`) is where that
+// is caught.
+//
+// Rows and columns that are exactly zero are structural: their eigenvalue is
+// exactly zero and their eigenvector is the canonical basis vector.
+//
+// Returns false if the decomposition could not be produced: a null `data` or
+// `evals_out`, a non-positive n, a non-finite entry, an allocation failure or
+// (in principle) a failure to converge. On false nothing has been written to
+// evals_out or evecs_out, and the caller must take its fallback path. Failure
+// is reported by the return value only: this function never throws.
 bool eigh(const std::complex<double>* data, int n, MatrixOrder order,
           double* evals_out, std::complex<double>* evecs_out);
 
