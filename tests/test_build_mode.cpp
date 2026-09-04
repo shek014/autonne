@@ -21,7 +21,7 @@
 
 #include <gtest/gtest.h>
 
-#include "autonne/verify.hpp"
+#include "autonne/detail/matrix_view.hpp"
 
 #ifndef AUTONNE_TEST_FAST_MATH
 #error "AUTONNE_TEST_FAST_MATH must be defined by the build for each variant"
@@ -62,6 +62,17 @@ TEST(BuildMode, LanguageStandardIsCpp23) {
 TEST(BuildMode, MdspanAvailabilityIsRecorded) {
   RecordProperty("uses_std_mdspan", AUTONNE_HAS_STD_MDSPAN);
   SUCCEED();
+}
+
+// The hand-rolled accessor is compiled in a variant of its own. That variant
+// only proves something if the request to bypass std::mdspan was honoured.
+TEST(BuildMode, HandRolledAccessorVariantBypassesStdMdspan) {
+#if defined(AUTONNE_NO_STD_MDSPAN)
+  EXPECT_EQ(AUTONNE_HAS_STD_MDSPAN, 0)
+      << "AUTONNE_NO_STD_MDSPAN is defined but the std::mdspan path is live";
+#else
+  GTEST_SKIP() << "this variant does not request the hand-rolled accessor";
+#endif
 }
 
 }  // namespace

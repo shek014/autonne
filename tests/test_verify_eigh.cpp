@@ -31,8 +31,9 @@ using autonne::verify::check_eigh;
 using autonne_test::Complex;
 using autonne_test::EighCase;
 using autonne_test::make_eigh_case;
-using autonne_test::opaque;
-using autonne_test::quiet_nan;
+using autonne_test::bits_of;
+using autonne_test::kQuietNanBits;
+using autonne_test::poke_bits;
 
 EighReport check(const EighCase& c) {
   return check_eigh(c.a.data(), c.n, c.order, c.evals.data(), c.q.data());
@@ -93,7 +94,8 @@ TEST(VerifyEigh, RejectsNanInEigenvector) {
                               MatrixOrder::ColMajor, 5150);
   ASSERT_TRUE(check(c).ok());
 
-  c.q[static_cast<std::size_t>(2) * 4 + 1] = Complex(opaque(quiet_nan()), 0.0);
+  poke_bits(c.q[static_cast<std::size_t>(2) * 4 + 1], kQuietNanBits,
+            bits_of(0.0));
 
   const EighReport r = check(c);
   EXPECT_FALSE(r.finite);

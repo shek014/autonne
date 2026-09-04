@@ -11,21 +11,42 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc, clang]
         include:
-          - compiler: gcc
+          - name: gcc-13
             cc: gcc-13
             cxx: g++-13
-          - compiler: clang
+            apt: g++-13
+          - name: gcc-14
+            cc: gcc-14
+            cxx: g++-14
+            apt: g++-14
+          - name: clang-18
             cc: clang-18
             cxx: clang++-18
+            apt: clang-18
+          # The newest LLVM release is the one that folds NaN guards written
+          # the naive way; see tests/test_fp_bad.cpp. Installed from
+          # apt.llvm.org because Ubuntu 24.04 does not ship it.
+          - name: clang-22
+            cc: clang-22
+            cxx: clang++-22
+            llvm: 22
+    name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Install toolchain (Ubuntu package)
+        if: ${{ matrix.apt }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.compiler == 'clang' && 'clang-18' || 'g++-13' }}
+          sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Install toolchain (apt.llvm.org)
+        if: ${{ matrix.llvm }}
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.llvm }}
 
       - name: Configure
         env:
@@ -38,3 +59,13 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # Every entry point has one strong definition per binary, so the
+      # floating-point flags on its translation unit are the flags that apply.
+      - name: Check symbol linkage
+        run: |
+          tools/check_symbols.sh \
+            build/libautonne.a \
+            build/autonne_tests_strict \
+            build/autonne_tests_fastmath \
+            build/autonne_tests_strict_nomdspan
