@@ -15,8 +15,16 @@
 // Public interface of autonne.
 //
 // Nothing here names a type that is not either a builtin or from <complex>.
-// Callers pass raw buffers; autonne owns no memory and allocates nothing the
-// caller can observe.
+// Callers pass raw buffers; autonne owns no memory that outlives a call, and
+// keeps no state between calls.
+//
+// Both functions are reentrant and safe to call concurrently on distinct
+// buffers: there is no global or static mutable state, and every working
+// array is allocated for the duration of the call. Concurrent calls sharing
+// an output buffer race, as they would anywhere. Neither function reads or
+// writes the floating-point environment: no rounding mode is changed, and no
+// exception flag is consulted, so a caller's fenv settings survive a call
+// unchanged.
 
 #ifndef AUTONNE_AUTONNE_HPP
 #define AUTONNE_AUTONNE_HPP

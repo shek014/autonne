@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -162,6 +163,65 @@ TEST(VerifyEigh, FlagsNonHermitianInput) {
   const EighReport r = check(c);
   EXPECT_FALSE(r.input_hermitian);
   EXPECT_FALSE(r.ok());
+}
+
+// The same pair as in test_verify_svd.cpp, for the reason given there: the
+// harness must measure a matrix at any scale, and must not accept a wrong
+// decomposition of a tiny one because every squared quantity underflowed.
+TEST(VerifyEigh, AcceptsACorrectDecompositionOfAHugeMatrix) {
+  for (const int exponent : {700, 900, 1000}) {
+    const double factor = std::ldexp(1.0, exponent);
+    EighCase c = make_eigh_case(4, {-3.0, -0.5, 1.0, 4.0}, MatrixOrder::ColMajor, 3101);
+    for (Complex& z : c.a) z *= factor;
+    for (double& x : c.evals) x *= factor;
+    EXPECT_TRUE(ReportAccepted(check(c))) << "2^" << exponent;
+  }
+}
+
+TEST(VerifyEigh, RejectsAWrongDecompositionOfATinyMatrix) {
+  for (const int exponent : {-700, -900, -1000}) {
+    const double factor = std::ldexp(1.0, exponent);
+    EighCase c = make_eigh_case(4, {-3.0, -0.5, 1.0, 4.0}, MatrixOrder::ColMajor, 3102);
+    for (Complex& z : c.a) z *= factor;
+    for (double& x : c.evals) x *= factor;
+    ASSERT_TRUE(check(c).ok()) << "2^" << exponent;
+
+    EighCase wrong = c;
+    wrong.evals[3] *= 2.0;
+    const EighReport r = check(wrong);
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+    EXPECT_FALSE(r.ok()) << "2^" << exponent;
+  }
+}
+
+// As in test_verify_svd.cpp: the power-of-two scaling must be representable
+// for a matrix below the normal range, and a wrong decomposition of one must
+// still be rejected.
+TEST(VerifyEigh, MeasuresMatricesBelowTheNormalRange) {
+  for (const int exponent : {-1024, -1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> a = {Complex(tiny, 0.0)};
+    const std::vector<double> evals = {tiny};
+    const std::vector<Complex> q = {Complex(1.0, 0.0)};
+    const EighReport r =
+        check_eigh(a.data(), 1, MatrixOrder::ColMajor, evals.data(), q.data());
+    EXPECT_TRUE(ReportAccepted(r)) << "2^" << exponent;
+  }
+}
+
+TEST(VerifyEigh, RejectsAWrongDecompositionBelowTheNormalRange) {
+  for (const int exponent : {-1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> a = {Complex(tiny, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(tiny, 0.0)};
+    const std::vector<Complex> q = {Complex(1.0, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(1.0, 0.0)};
+    const std::vector<double> evals = {0.25 * tiny, 3.0 * tiny};
+    const EighReport r =
+        check_eigh(a.data(), 2, MatrixOrder::ColMajor, evals.data(), q.data());
+    EXPECT_FALSE(r.ok()) << "2^" << exponent;
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+  }
 }
 
 TEST(VerifyEigh, RejectsMalformedArguments) {

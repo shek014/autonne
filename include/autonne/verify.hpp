@@ -55,6 +55,15 @@ using autonne::detail::fp_bad;
 // Every bound below is `factor * max(dimension) * eps * scale`. The factors are
 // generous by design: the harness must reject a wrong factorisation, not grade
 // a right one to the last ulp.
+//
+// Generous, but measured rather than picked. Lowering all three until the
+// suite breaks puts autonne's own output through at 16 and not at 4, so the
+// default sits about four times above what the kernel needs -- loose enough
+// that rounding on a 128 x 128 case cannot trip it, tight enough that the
+// deliberate perturbations in the test suite (a singular value moved by 1e-9,
+// a column scaled by 1.5) are still rejected by a wide margin. A caller who
+// wants a stricter check can tighten these; one who has to loosen them past
+// the default should suspect the factorisation rather than the bound.
 struct Tolerances {
   double eps = std::numeric_limits<double>::epsilon();
   double backward_factor = 64.0;
