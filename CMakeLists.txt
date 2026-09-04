@@ -37,7 +37,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(AUTONNE_SOURCES
   src/svd.cpp
-  src/eigh.cpp)
+  src/eigh.cpp
+  src/verify.cpp)
 
 set(AUTONNE_HEADERS
   include/autonne/autonne.hpp
@@ -122,10 +123,20 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_api_stubs.cpp
     tests/test_build_mode.cpp)
 
+  # nm backs the linkage test below. Without it that check is skipped rather
+  # than silently passing.
+  find_program(AUTONNE_NM_EXECUTABLE NAMES nm llvm-nm)
+  if(NOT AUTONNE_NM_EXECUTABLE)
+    message(WARNING
+      "nm not found: the symbol linkage tests will not be registered, so "
+      "nothing will notice if a harness entry point regains vague linkage.")
+  endif()
+
   # Each variant compiles the library sources into its own binary rather than
-  # linking the library target. verify.hpp is header-only and everything it
-  # measures is floating point, so the flags under test have to reach every
-  # translation unit in the binary, not just the test files.
+  # linking the library target. The harness measures floating point, so the
+  # flags under test have to reach every translation unit in the binary, not
+  # just the test files -- src/verify.cpp above all, which is where check_svd
+  # and check_eigh now live.
   function(autonne_add_test_variant variant)
     cmake_parse_arguments(ARG "" "" "FLAGS;DEFINES" ${ARGN})
     set(target autonne_tests_${variant})
@@ -142,6 +153,17 @@ if(AUTONNE_BUILD_TESTS)
     gtest_discover_tests(${target}
       TEST_PREFIX "${variant}."
       DISCOVERY_TIMEOUT 60)
+
+    # Not a GoogleTest case: it inspects the linked binary from outside, which
+    # is the only vantage point from which "exactly one strong definition" is
+    # observable at all.
+    if(AUTONNE_NM_EXECUTABLE AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+      add_test(NAME ${variant}.SymbolLinkage
+        COMMAND ${CMAKE_COMMAND}
+          -DAUTONNE_NM=${AUTONNE_NM_EXECUTABLE}
+          -DAUTONNE_BINARY=$<TARGET_FILE:${target}>
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_symbol_linkage.cmake)
+    endif()
   endfunction()
 
   autonne_add_test_variant(strict
