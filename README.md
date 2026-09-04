@@ -175,10 +175,14 @@ rather than trusted in place of it:
 #include <autonne/verify.hpp>
 
 const int k = std::min(rows, cols);
-if (!autonne::svd_thin(M, rows, cols, order, U, S, V)) { /* fallback */ }
+if (!autonne::svd_thin(M, rows, cols, order, U, S, V)) {
+  return fallback();  // U, S and V have not been written
+}
 const autonne::verify::SvdReport r =
     autonne::verify::check_svd(M, rows, cols, order, U, S, V, k);
-if (!r.ok()) { /* reject; r says which bound moved */ }
+if (!r.ok()) {
+  return fallback();  // r says which bound moved and by how much
+}
 ```
 
 `check_svd` accepts `k < min(rows, cols)` for a truncated slice, comparing the
