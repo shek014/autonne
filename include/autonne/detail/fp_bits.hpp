@@ -74,8 +74,8 @@ inline bool any_bad(const double* v, int n) noexcept {
   return false;
 }
 
-inline bool any_bad(const std::complex<double>* v, std::size_t n) noexcept {
-  for (std::size_t i = 0; i < n; ++i) {
+inline bool any_bad(const std::complex<double>* v, int n) noexcept {
+  for (int i = 0; i < n; ++i) {
     if (fp_bad(v[i])) return true;
   }
   return false;
