@@ -122,9 +122,9 @@ run under both floating-point models.
   draws matrices nobody chose -- arbitrary shapes, columns graded over thirty
   decades, exact rank deficiency down to the zero matrix, spectra repeated
   exactly, and whole matrices multiplied by `2^k` for `|k|` up to 900 -- and
-  compares each spectrum against numpy. Over 700 of them across the strict
-  build, the fast-math build and an MSVC build, on three seeds, the worst
-  relative disagreement was `3.8e-15`, about seventeen ulps, and the fast-math
+  compares each spectrum against numpy. Over 1700 of them across the strict
+  build, the fast-math build and an MSVC build, on five seeds, the worst
+  relative disagreement was `4.5e-15`, about twenty ulps, and the fast-math
   build was no less accurate than the strict one. It is a developer tool, not
   a CI test: a failure there is a lead to turn into a fixed case in
   `tests/corpus`.
