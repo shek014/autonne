@@ -55,6 +55,13 @@ using detail::kernel::Index;
 using detail::kernel::Rotation;
 using detail::kernel::at;
 
+// Sweep budget. Cyclic Jacobi converges quadratically once the off-diagonal
+// mass is small, so the count is low and grows slowly with n: lowering this
+// until the suite breaks puts the hardest case in the corpus and the stress
+// sweeps at twelve sweeps (a 128 x 128 random matrix, and a 96 x 96 with a
+// three-level degenerate spectrum). Sixty is therefore a five-fold margin,
+// not a guess. Exhausting it is reported as failure rather than papered over,
+// which is what the false return in the contract is for.
 constexpr int kMaxSweeps = 60;
 
 // Off-diagonal Frobenius norm squared and diagonal sum of squares, for the
