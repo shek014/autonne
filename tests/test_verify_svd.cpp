@@ -398,6 +398,41 @@ TEST(VerifySvd, RejectsAWrongFactorisationOfATinyMatrix) {
   }
 }
 
+// The scaling the harness applies must itself be representable. Forming it as
+// a single factor 2^-e fails once e exceeds 1023: the factor overflows to
+// infinity, every product becomes a NaN, and under -ffast-math the NaN guard
+// on a freshly computed value is folded away, so the wrong factorisation is
+// accepted. Both halves are tested here.
+TEST(VerifySvd, MeasuresMatricesBelowTheNormalRange) {
+  for (const int exponent : {-1024, -1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> m = {Complex(tiny, 0.0)};
+    const std::vector<Complex> u = {Complex(1.0, 0.0)};
+    const std::vector<double> sv = {tiny};
+    const std::vector<Complex> v = {Complex(1.0, 0.0)};
+    const SvdReport r = check_svd(m.data(), 1, 1, MatrixOrder::ColMajor, u.data(),
+                                  sv.data(), v.data(), 1);
+    EXPECT_TRUE(ReportAccepted(r)) << "2^" << exponent;
+  }
+}
+
+TEST(VerifySvd, RejectsAWrongFactorisationBelowTheNormalRange) {
+  for (const int exponent : {-1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> m = {Complex(tiny, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(tiny, 0.0)};
+    const std::vector<Complex> u = {Complex(1.0, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(1.0, 0.0)};
+    const std::vector<double> sv = {3.0 * tiny, 0.25 * tiny};
+    const std::vector<Complex> v = u;
+    const SvdReport r = check_svd(m.data(), 2, 2, MatrixOrder::ColMajor, u.data(),
+                                  sv.data(), v.data(), 2);
+    EXPECT_FALSE(r.ok()) << "2^" << exponent
+                         << ": a spectrum three times too large was accepted";
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+  }
+}
+
 // --- input validation -----------------------------------------------------
 
 TEST(VerifySvd, RejectsMalformedArguments) {

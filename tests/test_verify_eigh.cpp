@@ -194,6 +194,36 @@ TEST(VerifyEigh, RejectsAWrongDecompositionOfATinyMatrix) {
   }
 }
 
+// As in test_verify_svd.cpp: the power-of-two scaling must be representable
+// for a matrix below the normal range, and a wrong decomposition of one must
+// still be rejected.
+TEST(VerifyEigh, MeasuresMatricesBelowTheNormalRange) {
+  for (const int exponent : {-1024, -1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> a = {Complex(tiny, 0.0)};
+    const std::vector<double> evals = {tiny};
+    const std::vector<Complex> q = {Complex(1.0, 0.0)};
+    const EighReport r =
+        check_eigh(a.data(), 1, MatrixOrder::ColMajor, evals.data(), q.data());
+    EXPECT_TRUE(ReportAccepted(r)) << "2^" << exponent;
+  }
+}
+
+TEST(VerifyEigh, RejectsAWrongDecompositionBelowTheNormalRange) {
+  for (const int exponent : {-1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> a = {Complex(tiny, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(tiny, 0.0)};
+    const std::vector<Complex> q = {Complex(1.0, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(1.0, 0.0)};
+    const std::vector<double> evals = {0.25 * tiny, 3.0 * tiny};
+    const EighReport r =
+        check_eigh(a.data(), 2, MatrixOrder::ColMajor, evals.data(), q.data());
+    EXPECT_FALSE(r.ok()) << "2^" << exponent;
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+  }
+}
+
 TEST(VerifyEigh, RejectsMalformedArguments) {
   const EighCase c = make_eigh_case(3, {1.0, 2.0, 3.0}, MatrixOrder::ColMajor, 1);
   EXPECT_FALSE(

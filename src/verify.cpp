@@ -31,6 +31,8 @@
 
 #include <cmath>
 #include <complex>
+#include <cstddef>
+#include <vector>
 
 #include "autonne/detail/fp_bits.hpp"
 #include "autonne/detail/matrix_view.hpp"
@@ -70,19 +72,29 @@ bool all_finite(const double* v, int n) noexcept {
   return true;
 }
 
-// Sum of |scale * a(i,j)|^2. Squared norms are accumulated rather than
+// x * 2^-e and z * 2^-e, exactly, for any e.
+//
+// Forming 2^-e as a double and multiplying by it is wrong once e passes 1023:
+// the factor overflows to infinity and every product becomes a NaN, which is
+// reachable for a matrix whose largest component is below 2^-1024. ldexp has
+// no such limit, and scaling by a power of two is exact either way.
+double scaled(const double& x, int e) noexcept { return std::ldexp(x, -e); }
+
+std::complex<double> scaled(const std::complex<double>& z, int e) noexcept {
+  return std::complex<double>(std::ldexp(z.real(), -e), std::ldexp(z.imag(), -e));
+}
+
+// Sum of |2^-e a(i,j)|^2. Squared norms are accumulated rather than
 // square-rooted per element so that the energy identities below compare like
-// with like, and every caller passes a scale for the reason set out at
+// with like, and every caller passes an exponent for the reason set out at
 // scale_exponent below.
 template <typename View>
-double frobenius_sq(const View& a, double scale) noexcept {
+double frobenius_sq(const View& a, int e) noexcept {
   double acc = 0.0;
   for (int j = 0; j < cols_of(a); ++j) {
     for (int i = 0; i < rows_of(a); ++i) {
-      const std::complex<double> z = at(a, i, j);
-      const double re = z.real() * scale;
-      const double im = z.imag() * scale;
-      acc += re * re + im * im;
+      const std::complex<double> z = scaled(at(a, i, j), e);
+      acc += z.real() * z.real() + z.imag() * z.imag();
     }
   }
   return acc;
@@ -201,15 +213,18 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
   const double m_max = max_component(Mv);
   const double s_max = max_component(S, k);
   const int exponent = scale_exponent(m_max > s_max ? m_max : s_max);
-  const double scale = std::ldexp(1.0, -exponent);
 
-  const double energy_M = frobenius_sq(Mv, scale);
+  const double energy_M = frobenius_sq(Mv, exponent);
   r.norm_M = std::ldexp(std::sqrt(energy_M), exponent);
 
+  // The scaled spectrum, formed once: the residual below multiplies by it
+  // inside its innermost loop.
+  std::vector<double> S_scaled(static_cast<std::size_t>(k));
   double energy_S = 0.0;
   for (int t = 0; t < k; ++t) {
-    const double scaled = S[t] * scale;
-    energy_S += scaled * scaled;
+    const double v = scaled(S[t], exponent);
+    S_scaled[static_cast<std::size_t>(t)] = v;
+    energy_S += v * v;
   }
 
   // The spectrum verdicts stand on their own: a NaN in S fails them here
@@ -254,10 +269,10 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
     for (int i = 0; i < rows; ++i) {
       std::complex<double> approx(0.0, 0.0);
       for (int t = 0; t < k; ++t) {
-        approx += at(Uv, i, t) * (S[t] * scale) * std::conj(at(Vv, j, t));
+        approx += at(Uv, i, t) * S_scaled[static_cast<std::size_t>(t)] *
+                  std::conj(at(Vv, j, t));
       }
-      const std::complex<double> target = at(Mv, i, j) * scale;
-      const std::complex<double> d = target - approx;
+      const std::complex<double> d = scaled(at(Mv, i, j), exponent) - approx;
       residual_sq += d.real() * d.real() + d.imag() * d.imag();
     }
   }
@@ -304,19 +319,18 @@ EighReport check_eigh(const std::complex<double>* A, int n, MatrixOrder order,
   const double a_max = max_component(Av);
   const double lambda_max = max_component(evals, n);
   const int exponent = scale_exponent(a_max > lambda_max ? a_max : lambda_max);
-  const double scale = std::ldexp(1.0, -exponent);
 
-  const double energy_A = frobenius_sq(Av, scale);
+  const double energy_A = frobenius_sq(Av, exponent);
   const double norm_A_scaled = std::sqrt(energy_A);
   r.norm_A = std::ldexp(norm_A_scaled, exponent);
 
   double herm_sq = 0.0;
   double trace = 0.0;
   for (int j = 0; j < n; ++j) {
-    trace += at(Av, j, j).real() * scale;
+    trace += scaled(at(Av, j, j).real(), exponent);
     for (int i = 0; i < n; ++i) {
       const std::complex<double> d =
-          (at(Av, i, j) - std::conj(at(Av, j, i))) * scale;
+          scaled(at(Av, i, j) - std::conj(at(Av, j, i)), exponent);
       herm_sq += d.real() * d.real() + d.imag() * d.imag();
     }
   }
@@ -326,12 +340,14 @@ EighReport check_eigh(const std::complex<double>* A, int n, MatrixOrder order,
   r.hermitian_residual = std::ldexp(hermitian_residual, exponent);
   r.hermitian_bound = std::ldexp(hermitian_bound, exponent);
 
+  std::vector<double> lambda_scaled(static_cast<std::size_t>(n));
   double energy_L = 0.0;
   double sum_L = 0.0;
   for (int t = 0; t < n; ++t) {
-    const double scaled = evals[t] * scale;
-    energy_L += scaled * scaled;
-    sum_L += scaled;
+    const double v = scaled(evals[t], exponent);
+    lambda_scaled[static_cast<std::size_t>(t)] = v;
+    energy_L += v * v;
+    sum_L += v;
   }
 
   // As in check_svd: guard the operands in memory, then subtract.
@@ -352,8 +368,11 @@ EighReport check_eigh(const std::complex<double>* A, int n, MatrixOrder order,
   for (int j = 0; j < n; ++j) {
     for (int i = 0; i < n; ++i) {
       std::complex<double> acc(0.0, 0.0);
-      for (int t = 0; t < n; ++t) acc += (at(Av, i, t) * scale) * at(Qv, t, j);
-      const std::complex<double> d = acc - at(Qv, i, j) * (evals[j] * scale);
+      for (int t = 0; t < n; ++t) {
+        acc += scaled(at(Av, i, t), exponent) * at(Qv, t, j);
+      }
+      const std::complex<double> d =
+          acc - at(Qv, i, j) * lambda_scaled[static_cast<std::size_t>(j)];
       residual_sq += d.real() * d.real() + d.imag() * d.imag();
     }
   }
