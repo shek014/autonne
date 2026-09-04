@@ -101,6 +101,15 @@ static inline constexpr double unit_roundoff() noexcept {
 // flushed the second singular value of diag(1, 2^-400) to zero although
 // 3.87e-121 is an ordinary normal double, and made the two kernels disagree
 // on that matrix, since eigh returned it correctly.
+// One consequence of sitting this low: the smallest rotation threshold the
+// one-sided sweep can form, tol * sqrt(alpha) * sqrt(beta) with both norms at
+// the floor, is itself subnormal. Under a flush-to-zero rounding mode it
+// becomes zero and the threshold degenerates to "rotate whenever the inner
+// product is nonzero", which costs extra rotations and no accuracy -- and
+// exhausting the sweep budget is no longer fatal, since the sweep ends with
+// an acceptance test. It also means the sweep can now meet a subnormal
+// inner product, which the old floor made impossible; that is safe only
+// because unit_phase handles one, so these two choices are coupled.
 static inline constexpr double column_floor() noexcept {
   return 3.0549363634996046820e-151;  // 2^-500
 }

@@ -136,9 +136,14 @@ run under both floating-point models.
   underflow. Checked over 490,000 matrices in both floating-point models, on
   Clang and MSVC, with no refusal and no factorisation the harness rejects.
 - **Any scale.** The harness measures on the input scaled by a power of two,
-  so it neither overflows on a matrix near `1e210` nor, more dangerously,
-  underflows to all-zeros on one near `1e-170` and accepts whatever it is
-  handed. Both directions are tested, in both floating-point models.
+  applied with `ldexp` so the scaling itself is representable at any exponent.
+  It therefore neither overflows on a matrix near `1e210` nor, more
+  dangerously, underflows to all-zeros on one near `1e-170` and accepts
+  whatever it is handed. Both directions are tested, in both floating-point
+  models. One limit is inherent rather than fixable: for a matrix whose
+  largest component is within a few ulps of the bottom of the subnormal range,
+  the true spectrum is not representable, and the harness's relative bound is
+  smaller than the one-ulp absolute error any implementation is forced into.
 
 ## Design constraints
 

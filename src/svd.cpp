@@ -306,10 +306,25 @@ bool jacobi_orthogonalise(std::vector<Complex>& x, Index rows, std::vector<Compl
   //
   // What the caller needs is not that the iteration converged but that the
   // columns are orthogonal to the precision available. Measure that directly.
-  // The bound is eight times the rotation threshold, so the resulting
-  // ||U^* U - I||_F is around cols * 8 * tol, two orders inside the harness's
-  // own 64 * max(rows, cols) * eps. This is the counterpart of the acceptance
-  // test the two-sided sweep in eigh.cpp already had.
+  // This is the counterpart of the acceptance test the two-sided sweep in
+  // eigh.cpp already had.
+  //
+  // The bound is four times the rotation threshold. tol is itself the noise
+  // floor -- an inner product accumulated over `rows` terms carries about
+  // sqrt(rows) * u of rounding, so no rotation can drive a pair below it --
+  // and the slack covers a pair sitting a little above it, which is where the
+  // stall happens (measured at 1.09 * tol).
+  //
+  // What that costs, worst case: with every one of the pairs at the bound,
+  // ||X^* X - I||_F is about cols * 4 * tol = 4 * cols * sqrt(rows) * u, and
+  // the harness allows 64 * max(rows, cols) * eps. For a square input those
+  // are in the ratio sqrt(n) / 32, so the test stays inside the harness bound
+  // for every n up to 1024 -- eight times the largest matrix this library is
+  // meant for. The ratio grows as sqrt(n), so it is stated here rather than
+  // left to be discovered if that cap ever moves. In practice the worst case
+  // is unreachable, since it needs every pair at the bound at once while a
+  // converged sweep leaves almost all of them at u; the measured ratio is
+  // 0.03.
   double worst_cosine = 0.0;
   for (Index p = 0; p + 1 < cols; ++p) {
     if (dead[p]) continue;
@@ -329,7 +344,7 @@ bool jacobi_orthogonalise(std::vector<Complex>& x, Index rows, std::vector<Compl
       if (cosine > worst_cosine) worst_cosine = cosine;
     }
   }
-  return worst_cosine <= 8.0 * tol;
+  return worst_cosine <= 4.0 * tol;
 }
 
 // --- orientation -----------------------------------------------------------
