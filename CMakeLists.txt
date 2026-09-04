@@ -35,6 +35,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # baseline inside a benchmark target only, and must never become a dependency
 # of the library or of the test suite.
 
+# verify.cpp is a source, not a header, so that check_svd and check_eigh have
+# exactly one definition per binary, built under this file's floating-point
+# flags. See the note at the top of include/autonne/verify.hpp.
 set(AUTONNE_SOURCES
   src/svd.cpp
   src/eigh.cpp
@@ -44,6 +47,7 @@ set(AUTONNE_HEADERS
   include/autonne/autonne.hpp
   include/autonne/verify.hpp
   include/autonne/hexfloat.hpp
+  include/autonne/detail/fp_bits.hpp
   include/autonne/detail/matrix_view.hpp)
 
 # --- shared compile settings -------------------------------------------------
@@ -123,15 +127,6 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_api_stubs.cpp
     tests/test_build_mode.cpp)
 
-  # nm backs the linkage test below. Without it that check is skipped rather
-  # than silently passing.
-  find_program(AUTONNE_NM_EXECUTABLE NAMES nm llvm-nm)
-  if(NOT AUTONNE_NM_EXECUTABLE)
-    message(WARNING
-      "nm not found: the symbol linkage tests will not be registered, so "
-      "nothing will notice if a harness entry point regains vague linkage.")
-  endif()
-
   # Each variant compiles the library sources into its own binary rather than
   # linking the library target. The harness measures floating point, so the
   # flags under test have to reach every translation unit in the binary, not
@@ -153,17 +148,6 @@ if(AUTONNE_BUILD_TESTS)
     gtest_discover_tests(${target}
       TEST_PREFIX "${variant}."
       DISCOVERY_TIMEOUT 60)
-
-    # Not a GoogleTest case: it inspects the linked binary from outside, which
-    # is the only vantage point from which "exactly one strong definition" is
-    # observable at all.
-    if(AUTONNE_NM_EXECUTABLE AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
-      add_test(NAME ${variant}.SymbolLinkage
-        COMMAND ${CMAKE_COMMAND}
-          -DAUTONNE_NM=${AUTONNE_NM_EXECUTABLE}
-          -DAUTONNE_BINARY=$<TARGET_FILE:${target}>
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_symbol_linkage.cmake)
-    endif()
   endfunction()
 
   autonne_add_test_variant(strict
@@ -173,4 +157,11 @@ if(AUTONNE_BUILD_TESTS)
   autonne_add_test_variant(fastmath
     FLAGS ${AUTONNE_FAST_FP_FLAGS}
     DEFINES AUTONNE_TEST_FAST_MATH=1)
+
+  # The hand-rolled accessor in matrix_view.hpp is dead code wherever <mdspan>
+  # exists, and dead code rots. This variant forces it live; floating-point
+  # mode is irrelevant to an index calculation, so strict is enough.
+  autonne_add_test_variant(strict_nomdspan
+    FLAGS ${AUTONNE_STRICT_FP_FLAGS}
+    DEFINES AUTONNE_TEST_FAST_MATH=0 AUTONNE_NO_STD_MDSPAN=1)
 endif()

@@ -18,28 +18,23 @@
 // checks every factorisation against the matrix it came from, and a check that
 // cannot reject a bad factorisation is worth nothing.
 //
-// check_svd, check_eigh and orthonormality_residual are declared here and
-// defined in src/verify.cpp, so each has exactly one strong definition per
-// binary. Inline, they would have vague linkage: flags are not part of a
-// mangled name, so a binary mixing -ffast-math and -fno-fast-math translation
-// units would run whichever copy the linker happened to keep. Out-of-line, the
-// floating-point flag travels with the code that needs it.
-//
-// fp_bad and the small helpers below stay inline. fp_bad is flag-insensitive
-// by construction -- bit_cast plus an integer mask -- and the rest are cheap
-// enough that the caller's own flags are the ones that should apply.
+// The entry points are declared here and defined in src/verify.cpp, so that
+// each has exactly one definition per binary, built under that file's
+// floating-point flags. A header-only harness would be instantiated by every
+// including translation unit and merged by the linker without regard to the
+// flags each copy was built under; a consumer mixing -ffast-math and strict
+// files would then be judged by whichever copy won the link. The guard
+// fp_bad stays inline because it is integer work on the object representation
+// and has no floating-point mode to be sensitive to.
 
 #ifndef AUTONNE_VERIFY_HPP
 #define AUTONNE_VERIFY_HPP
 
-#include <bit>
-#include <cmath>
 #include <complex>
-#include <cstdint>
 #include <limits>
 
 #include "autonne/autonne.hpp"
-#include "autonne/detail/matrix_view.hpp"
+#include "autonne/detail/fp_bits.hpp"
 
 namespace autonne {
 namespace verify {
@@ -48,82 +43,10 @@ namespace verify {
 // Non-finite detection
 // ---------------------------------------------------------------------------
 
-// True if x is NaN or an infinity.
-//
-// Deliberately does not call std::isnan or std::isfinite. Under -ffast-math
-// (specifically -ffinite-math-only) the compiler is entitled to assume no NaN
-// or infinity is ever produced and folds those predicates to a constant false,
-// which deletes the guard entirely. This reads the IEEE-754 binary64 exponent
-// field through std::bit_cast: an all-ones exponent means NaN or infinity. It
-// is integer work on the object representation, so no assumption about the
-// range of floating-point values can remove it.
-constexpr bool fp_bad(double x) noexcept {
-  static_assert(sizeof(double) == sizeof(std::uint64_t),
-                "fp_bad assumes IEEE-754 binary64");
-  const std::uint64_t bits = std::bit_cast<std::uint64_t>(x);
-  return ((bits >> 52) & UINT64_C(0x7FF)) == UINT64_C(0x7FF);
-}
-
-inline bool fp_bad(const std::complex<double>& z) noexcept {
-  return fp_bad(z.real()) || fp_bad(z.imag());
-}
-
-namespace detail {
-
-using autonne::detail::at;
-using autonne::detail::cols_of;
-using autonne::detail::rows_of;
-
-// A comparison is only meaningful once both sides are known finite; with a NaN
-// operand the ordering predicates are themselves subject to the same
-// -ffast-math assumptions. Every threshold test below routes through here.
-constexpr bool within(double value, double bound) noexcept {
-  if (fp_bad(value) || fp_bad(bound)) return false;
-  return value <= bound;
-}
-
-template <typename View>
-bool all_finite(const View& a) noexcept {
-  for (int j = 0; j < cols_of(a); ++j) {
-    for (int i = 0; i < rows_of(a); ++i) {
-      if (fp_bad(at(a, i, j))) return false;
-    }
-  }
-  return true;
-}
-
-inline bool all_finite(const double* v, int n) noexcept {
-  for (int i = 0; i < n; ++i) {
-    if (fp_bad(v[i])) return false;
-  }
-  return true;
-}
-
-// Sum of |a(i,j)|^2. Squared norms are accumulated rather than square-rooted
-// per element so that the energy identities below compare like with like.
-template <typename View>
-double frobenius_sq(const View& a) noexcept {
-  double acc = 0.0;
-  for (int j = 0; j < cols_of(a); ++j) {
-    for (int i = 0; i < rows_of(a); ++i) {
-      const std::complex<double> z = at(a, i, j);
-      acc += z.real() * z.real() + z.imag() * z.imag();
-    }
-  }
-  return acc;
-}
-
-// The kept columns of U, V and the eigenvectors are all column-major, so this
-// needs no template parameter; naming the type keeps it out of line.
-using ConstColMajor = autonne::detail::ColMajorRef<const std::complex<double>>;
-
-// ||X^* X - I||_F for an n x k matrix X. Defined in src/verify.cpp.
-double orthonormality_residual(const ConstColMajor& x) noexcept;
-
-constexpr int min_int(int a, int b) noexcept { return a < b ? a : b; }
-constexpr int max_int(int a, int b) noexcept { return a > b ? a : b; }
-
-}  // namespace detail
+// True if the object in memory is NaN or an infinity. Takes its argument by
+// reference deliberately: see detail/fp_bits.hpp for why a by-value double is
+// not a value a fast-math build can be trusted to keep non-finite.
+using autonne::detail::fp_bad;
 
 // ---------------------------------------------------------------------------
 // Tolerances

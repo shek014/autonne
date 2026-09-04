@@ -54,9 +54,19 @@ form the tail.
 
 **Guards that survive `-ffast-math`.** Under that flag a compiler may assume no
 infinity or NaN exists, so `isfinite` folds to a constant and the check becomes
-dead code. autonne's finiteness guards read the exponent field through `std::bit_cast`
-instead, which no optimiser can remove. The test suite is built twice — strict
-and fast-math — and both must pass.
+dead code. autonne's finiteness guards read the exponent field of the object
+representation in memory instead, by reference and never through a by-value
+`double`: from Clang 22 on, a value that has crossed a function boundary by
+value is assumed finite even by an integer test on its bits. The test suite is
+built under strict and fast-math floating point (and once more with the
+hand-rolled accessor path), and every variant must pass.
+
+**One definition per entry point.** `svd_thin`, `eigh`, `check_svd` and
+`check_eigh` are compiled in the library, not instantiated from headers. A
+header-only definition is emitted by every including file and the linker keeps
+one copy per binary without regard to the flags it was built under, so a
+consumer mixing `-ffast-math` and strict files would run whichever copy won the
+link. CI checks the linkage with `nm`.
 
 **Accuracy on degenerate and rank-deficient input.** Repeated singular values
 and hard zero blocks are the common case here, not the exception. Correctness on

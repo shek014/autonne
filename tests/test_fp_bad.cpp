@@ -16,11 +16,20 @@
 // the fast-math test binary; a fp_bad that passes under -fno-fast-math and
 // fails under -ffast-math means the guard technique does not work and every
 // finiteness check in the harness is decoration.
+//
+// Every non-finite value here is written into memory as an integer bit pattern
+// and reaches fp_bad by reference. That is not a convenience: under
+// -ffinite-math-only a NaN that crosses a function boundary by value is
+// assumed away, and Clang 22 folds a guard on such a value to false. The
+// guard's contract is therefore "detects a non-finite object representation
+// in memory", which is exactly what a kernel scanning a caller's buffer needs.
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <complex>
+#include <cstdint>
+#include <vector>
 
 #include "autonne/verify.hpp"
 #include "test_support.hpp"
@@ -28,23 +37,27 @@
 namespace {
 
 using autonne::verify::fp_bad;
-using autonne_test::largest_normal;
-using autonne_test::negative_inf;
+using autonne_test::Complex;
+using autonne_test::Slot;
+using autonne_test::bits_of;
+using autonne_test::kLargestNormalBits;
+using autonne_test::kNegativeInfBits;
+using autonne_test::kPositiveInfBits;
+using autonne_test::kQuietNanBits;
+using autonne_test::kSignalingNanBits;
+using autonne_test::kSmallestSubnormalBits;
 using autonne_test::opaque;
-using autonne_test::positive_inf;
-using autonne_test::quiet_nan;
-using autonne_test::signaling_nan;
-using autonne_test::smallest_subnormal;
+using autonne_test::poke_bits;
 
 TEST(FpBad, DetectsNan) {
-  EXPECT_TRUE(fp_bad(opaque(quiet_nan())));
-  EXPECT_TRUE(fp_bad(opaque(signaling_nan())));
-  EXPECT_TRUE(fp_bad(opaque(-quiet_nan())));
+  EXPECT_TRUE(fp_bad(Slot(kQuietNanBits).get()));
+  EXPECT_TRUE(fp_bad(Slot(kSignalingNanBits).get()));
+  EXPECT_TRUE(fp_bad(Slot(kQuietNanBits | UINT64_C(0x8000000000000000)).get()));
 }
 
 TEST(FpBad, DetectsInfinities) {
-  EXPECT_TRUE(fp_bad(opaque(positive_inf())));
-  EXPECT_TRUE(fp_bad(opaque(negative_inf())));
+  EXPECT_TRUE(fp_bad(Slot(kPositiveInfBits).get()));
+  EXPECT_TRUE(fp_bad(Slot(kNegativeInfBits).get()));
 }
 
 TEST(FpBad, AcceptsFiniteValues) {
@@ -52,27 +65,50 @@ TEST(FpBad, AcceptsFiniteValues) {
   EXPECT_FALSE(fp_bad(opaque(-0.0)));
   EXPECT_FALSE(fp_bad(opaque(1.0)));
   EXPECT_FALSE(fp_bad(opaque(-3.5)));
-  EXPECT_FALSE(fp_bad(opaque(smallest_subnormal())));
-  EXPECT_FALSE(fp_bad(opaque(largest_normal())));
-  EXPECT_FALSE(fp_bad(opaque(-largest_normal())));
+  EXPECT_FALSE(fp_bad(Slot(kSmallestSubnormalBits).get()));
+  EXPECT_FALSE(fp_bad(Slot(kLargestNormalBits).get()));
+  EXPECT_FALSE(fp_bad(Slot(kLargestNormalBits | UINT64_C(0x8000000000000000)).get()));
 }
 
 // The exponent field is all ones for NaN and infinity and nothing else, so the
 // boundary is one ulp below the largest finite value.
 TEST(FpBad, BoundaryIsExact) {
-  EXPECT_FALSE(fp_bad(opaque(autonne_test::bits_to_double(UINT64_C(0x7FEFFFFFFFFFFFFF)))));
-  EXPECT_TRUE(fp_bad(opaque(autonne_test::bits_to_double(UINT64_C(0x7FF0000000000000)))));
-  EXPECT_FALSE(fp_bad(opaque(autonne_test::bits_to_double(UINT64_C(0xFFEFFFFFFFFFFFFF)))));
-  EXPECT_TRUE(fp_bad(opaque(autonne_test::bits_to_double(UINT64_C(0xFFF0000000000000)))));
+  EXPECT_FALSE(fp_bad(Slot(UINT64_C(0x7FEFFFFFFFFFFFFF)).get()));
+  EXPECT_TRUE(fp_bad(Slot(UINT64_C(0x7FF0000000000000)).get()));
+  EXPECT_FALSE(fp_bad(Slot(UINT64_C(0xFFEFFFFFFFFFFFFF)).get()));
+  EXPECT_TRUE(fp_bad(Slot(UINT64_C(0xFFF0000000000000)).get()));
 }
 
+// The complex overload must read the object representation directly. Going
+// through real() and imag() would hand each part to the guard by value, which
+// is the boundary that -ffinite-math-only assumes finite.
 TEST(FpBad, ComplexOverloadChecksBothParts) {
-  const std::complex<double> good(1.0, -2.0);
-  const std::complex<double> bad_real(opaque(quiet_nan()), -2.0);
-  const std::complex<double> bad_imag(1.0, opaque(positive_inf()));
-  EXPECT_FALSE(fp_bad(good));
-  EXPECT_TRUE(fp_bad(bad_real));
-  EXPECT_TRUE(fp_bad(bad_imag));
+  std::vector<Complex> z(3, Complex(1.0, -2.0));
+  poke_bits(z[1], kQuietNanBits, bits_of(-2.0));
+  poke_bits(z[2], bits_of(1.0), kPositiveInfBits);
+  EXPECT_FALSE(fp_bad(z[0]));
+  EXPECT_TRUE(fp_bad(z[1]));
+  EXPECT_TRUE(fp_bad(z[2]));
+}
+
+// A buffer scan, the shape in which the kernel and the harness actually use
+// the guard: a caller's array with one bad element somewhere in the middle.
+TEST(FpBad, FindsOneBadElementInABuffer) {
+  std::vector<double> buffer(64, 0.25);
+  poke_bits(buffer[37], kNegativeInfBits);
+  int found = 0;
+  for (const double& x : buffer) {
+    if (fp_bad(x)) ++found;
+  }
+  EXPECT_EQ(found, 1);
+
+  std::vector<Complex> cbuffer(64, Complex(0.25, -0.75));
+  poke_bits(cbuffer[5], bits_of(0.25), kSignalingNanBits);
+  found = 0;
+  for (const Complex& z : cbuffer) {
+    if (fp_bad(z)) ++found;
+  }
+  EXPECT_EQ(found, 1);
 }
 
 // A NaN that arrives from arithmetic rather than from a literal bit pattern.
@@ -84,14 +120,15 @@ TEST(FpBad, ComplexOverloadChecksBothParts) {
 // arithmetic, not about fp_bad; the bit-pattern tests above are what pin the
 // guard down, and those hold in both builds.
 TEST(FpBad, DetectsNanFromArithmetic) {
-  const double inf = opaque(positive_inf());
-  const double produced = opaque(inf - inf);
-  RecordProperty("subtraction_produced_non_finite", fp_bad(produced) ? 1 : 0);
+  const Slot inf(kPositiveInfBits);
+  std::vector<double> produced(1, 0.0);
+  produced[0] = inf.get() - inf.get();
+  RecordProperty("subtraction_produced_non_finite", fp_bad(produced[0]) ? 1 : 0);
 #if AUTONNE_TEST_FAST_MATH
   GTEST_SKIP() << "-ffast-math may fold inf - inf before a NaN is ever "
                   "materialised; nothing reaches the guard to be detected";
 #else
-  EXPECT_TRUE(fp_bad(produced));
+  EXPECT_TRUE(fp_bad(produced[0]));
 #endif
 }
 
@@ -99,7 +136,8 @@ TEST(FpBad, DetectsNanFromArithmetic) {
 // Under -ffast-math std::isnan is entitled to answer false for a genuine NaN;
 // the point of fp_bad is that it is not.
 TEST(FpBad, StdPredicateBehaviourIsRecorded) {
-  const double nan_value = opaque(quiet_nan());
+  const Slot nan_slot(kQuietNanBits);
+  const double& nan_value = nan_slot.get();
   #if defined(__clang__)
   #  pragma clang diagnostic push
   #  pragma clang diagnostic ignored "-Wnan-infinity-disabled"
@@ -114,6 +152,23 @@ TEST(FpBad, StdPredicateBehaviourIsRecorded) {
   #endif
   RecordProperty("fp_bad_on_nan", fp_bad(nan_value) ? 1 : 0);
   EXPECT_TRUE(fp_bad(nan_value));
+}
+
+// Records what happens when a NaN crosses a function boundary by value before
+// reaching the guard. Under strict floating point it must still be detected.
+// Under -ffast-math the compiler may assume the returned value is finite, and
+// Clang 22 does: the guard then sees a value that is no longer a NaN. This is
+// the reason the harness and the kernel only ever inspect memory by reference,
+// and the reason this file never builds a NaN any other way.
+TEST(FpBad, ByValueBoundaryBehaviourIsRecorded) {
+  const Slot nan_slot(kQuietNanBits);
+  const double through_boundary = opaque(nan_slot.get());
+  RecordProperty("nan_survives_by_value_boundary", fp_bad(through_boundary) ? 1 : 0);
+#if AUTONNE_TEST_FAST_MATH
+  SUCCEED();
+#else
+  EXPECT_TRUE(fp_bad(through_boundary));
+#endif
 }
 
 }  // namespace
