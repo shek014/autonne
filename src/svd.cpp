@@ -48,6 +48,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include "autonne/detail/fp_bits.hpp"
@@ -406,7 +407,7 @@ bool svd_core(std::vector<Complex> b, Index m, Index n, CoreResult& out) {
 bool svd_impl(const Complex* data, Index rows, Index cols, MatrixOrder order,
               Complex* u_out, double* s_out, Complex* v_out) {
   const Index k = rows < cols ? rows : cols;
-  if (detail::any_bad(data, rows * cols)) return false;
+  if (detail::any_bad(data, static_cast<int>(rows * cols))) return false;
 
   const auto in = detail::ordered(data, static_cast<int>(rows), static_cast<int>(cols), order);
 
@@ -480,8 +481,9 @@ bool svd_impl(const Complex* data, Index rows, Index cols, MatrixOrder order,
     detail::kernel::complete_orthonormal(v.data(), cols, next_v, k, work);
   }
 
-  if (detail::any_bad(u.data(), rows * k) || detail::any_bad(s.data(), static_cast<int>(k)) ||
-      detail::any_bad(v.data(), cols * k)) {
+  if (detail::any_bad(u.data(), static_cast<int>(rows * k)) ||
+      detail::any_bad(s.data(), static_cast<int>(k)) ||
+      detail::any_bad(v.data(), static_cast<int>(cols * k))) {
     return false;
   }
   for (Index i = 0; i < rows * k; ++i) u_out[i] = u[i];
@@ -497,6 +499,12 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
               std::complex<double>* V_out) {
   if (data == nullptr || rows <= 0 || cols <= 0 || U_out == nullptr ||
       S_out == nullptr || V_out == nullptr) {
+    return false;
+  }
+  // Element counts are handled as int throughout the public surface; a shape
+  // whose element count does not fit is refused rather than truncated.
+  if (static_cast<unsigned long long>(rows) * static_cast<unsigned long long>(cols) >
+      static_cast<unsigned long long>(std::numeric_limits<int>::max())) {
     return false;
   }
   try {

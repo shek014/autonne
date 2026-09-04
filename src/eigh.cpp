@@ -39,6 +39,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include "autonne/detail/fp_bits.hpp"
@@ -126,7 +127,7 @@ bool jacobi_diagonalise(std::vector<Complex>& h, std::vector<double>& d, Index n
 
 bool eigh_impl(const Complex* data, Index n, MatrixOrder order, double* evals_out,
                Complex* evecs_out) {
-  if (detail::any_bad(data, n * n)) return false;
+  if (detail::any_bad(data, static_cast<int>(n * n))) return false;
   const auto in = detail::ordered(data, static_cast<int>(n), static_cast<int>(n), order);
 
   // Hermitian part, real diagonal.
@@ -220,7 +221,7 @@ bool eigh_impl(const Complex* data, Index n, MatrixOrder order, double* evals_ou
   for (Index c = negatives; c < nc; ++c) place_core(c);
 
   if (detail::any_bad(evals.data(), static_cast<int>(n))) return false;
-  if (evecs_out != nullptr && detail::any_bad(evecs.data(), n * n)) return false;
+  if (evecs_out != nullptr && detail::any_bad(evecs.data(), static_cast<int>(n * n))) return false;
   for (Index i = 0; i < n; ++i) evals_out[i] = evals[i];
   if (evecs_out != nullptr) {
     for (Index i = 0; i < n * n; ++i) evecs_out[i] = evecs[i];
@@ -233,6 +234,10 @@ bool eigh_impl(const Complex* data, Index n, MatrixOrder order, double* evals_ou
 bool eigh(const std::complex<double>* data, int n, MatrixOrder order,
           double* evals_out, std::complex<double>* evecs_out) {
   if (data == nullptr || n <= 0 || evals_out == nullptr) return false;
+  if (static_cast<unsigned long long>(n) * static_cast<unsigned long long>(n) >
+      static_cast<unsigned long long>(std::numeric_limits<int>::max())) {
+    return false;
+  }
   try {
     return eigh_impl(data, static_cast<Index>(n), order, evals_out, evecs_out);
   } catch (...) {
