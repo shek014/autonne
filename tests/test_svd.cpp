@@ -505,6 +505,40 @@ TEST(Svd, KeepsSingularValuesFarBelowOne) {
   }
 }
 
+// A row or column made entirely of subnormal entries is not structurally
+// zero, and must not be treated as one differently by different builds. The
+// concern is a denormals-are-zero rounding mode, which MSVC's /fp:fast
+// selects: the structural-zero test compares entries against 0.0, and if
+// subnormal operands read as zero there the kernel would silently take a
+// different path. Measured identical across MSVC /fp:strict, MSVC /fp:fast
+// and Clang -ffast-math, so this pins it rather than reporting it.
+TEST(Svd, TreatsSubnormalRowsAndColumnsConsistently) {
+  const double t = std::ldexp(1.0, -1074);
+
+  std::vector<Complex> subnormal_row = {Complex(3 * t, 0.0), Complex(0.5, 0.25),
+                                        Complex(5 * t, 0.0), Complex(-0.25, 0.5)};
+  const SvdResult rr = run_svd(subnormal_row.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(rr.ok);
+  EXPECT_TRUE(SvdAccepted(check(subnormal_row.data(), 2, 2, MatrixOrder::ColMajor, rr)));
+
+  std::vector<Complex> subnormal_col = {Complex(0.5, 0.25), Complex(-0.25, 0.5),
+                                        Complex(3 * t, 0.0), Complex(5 * t, 0.0)};
+  const SvdResult rc = run_svd(subnormal_col.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(rc.ok);
+  EXPECT_TRUE(SvdAccepted(check(subnormal_col.data(), 2, 2, MatrixOrder::ColMajor, rc)));
+
+  // A matrix that is entirely subnormal is scaled back into the normal range
+  // like any other, so its spectrum comes out at the right magnitude rather
+  // than collapsing to zero.
+  std::vector<Complex> all_subnormal = {Complex(3 * t, 0.0), Complex(0.0, 0.0),
+                                        Complex(0.0, 0.0), Complex(5 * t, 0.0)};
+  const SvdResult ra = run_svd(all_subnormal.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(ra.ok);
+  EXPECT_TRUE(SvdAccepted(check(all_subnormal.data(), 2, 2, MatrixOrder::ColMajor, ra)));
+  EXPECT_EQ(ra.s[0], 5.0 * t);
+  EXPECT_EQ(ra.s[1], 3.0 * t);
+}
+
 // --- size ------------------------------------------------------------------
 
 TEST(Svd, FactorsLargeRandomShapes) {
