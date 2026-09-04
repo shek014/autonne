@@ -34,8 +34,10 @@ using autonne::verify::check_svd;
 using autonne_test::Complex;
 using autonne_test::SvdCase;
 using autonne_test::make_svd_case;
-using autonne_test::opaque;
-using autonne_test::quiet_nan;
+using autonne_test::bits_of;
+using autonne_test::kPositiveInfBits;
+using autonne_test::kQuietNanBits;
+using autonne_test::poke_bits;
 
 SvdReport check(const SvdCase& c) {
   return check_svd(c.m.data(), c.rows, c.cols, c.order, c.u.data(), c.s.data(),
@@ -130,9 +132,9 @@ TEST(VerifySvd, RejectsNanInUColumn) {
                             MatrixOrder::ColMajor, 12345);
   ASSERT_TRUE(check(c).ok());
 
-  // Second column of U, third row.
-  c.u[static_cast<std::size_t>(1) * 4 + 2] =
-      Complex(opaque(quiet_nan()), 0.0);
+  // Second column of U, third row. Written as bits: see test_support.hpp.
+  poke_bits(c.u[static_cast<std::size_t>(1) * 4 + 2], kQuietNanBits,
+            bits_of(0.0));
 
   const SvdReport r = check(c);
   EXPECT_FALSE(r.finite);
@@ -144,7 +146,7 @@ TEST(VerifySvd, RejectsInfInVColumn) {
                             MatrixOrder::ColMajor, 12345);
   ASSERT_TRUE(check(c).ok());
 
-  c.v[0] = Complex(0.5, opaque(autonne_test::positive_inf()));
+  poke_bits(c.v[0], bits_of(0.5), kPositiveInfBits);
 
   const SvdReport r = check(c);
   EXPECT_FALSE(r.finite);
@@ -273,7 +275,7 @@ TEST(VerifySvd, RejectsNanSingularValue) {
                             MatrixOrder::ColMajor, 912);
   ASSERT_TRUE(check(c).ok());
 
-  c.s[2] = opaque(quiet_nan());
+  poke_bits(c.s[2], kQuietNanBits);
 
   const SvdReport r = check(c);
   EXPECT_FALSE(r.finite);

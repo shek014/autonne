@@ -35,6 +35,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # baseline inside a benchmark target only, and must never become a dependency
 # of the library or of the test suite.
 
+# verify.cpp is a source, not a header, so that check_svd and check_eigh have
+# exactly one definition per binary, built under this file's floating-point
+# flags. See the note at the top of include/autonne/verify.hpp.
 set(AUTONNE_SOURCES
   src/svd.cpp
   src/eigh.cpp
@@ -44,6 +47,7 @@ set(AUTONNE_HEADERS
   include/autonne/autonne.hpp
   include/autonne/verify.hpp
   include/autonne/hexfloat.hpp
+  include/autonne/detail/fp_bits.hpp
   include/autonne/detail/matrix_view.hpp)
 
 # --- shared compile settings -------------------------------------------------
@@ -173,4 +177,11 @@ if(AUTONNE_BUILD_TESTS)
   autonne_add_test_variant(fastmath
     FLAGS ${AUTONNE_FAST_FP_FLAGS}
     DEFINES AUTONNE_TEST_FAST_MATH=1)
+
+  # The hand-rolled accessor in matrix_view.hpp is dead code wherever <mdspan>
+  # exists, and dead code rots. This variant forces it live; floating-point
+  # mode is irrelevant to an index calculation, so strict is enough.
+  autonne_add_test_variant(strict_nomdspan
+    FLAGS ${AUTONNE_STRICT_FP_FLAGS}
+    DEFINES AUTONNE_TEST_FAST_MATH=0 AUTONNE_NO_STD_MDSPAN=1)
 endif()

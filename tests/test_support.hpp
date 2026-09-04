@@ -25,6 +25,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "autonne/autonne.hpp"
@@ -62,22 +63,63 @@ class Lcg {
   std::uint64_t state_;
 };
 
-// Reinterprets a bit pattern as a double. NaN and infinity are built this way
-// rather than computed (0.0/0.0, 1.0/0.0) because under -ffast-math the
-// compiler may fold such an expression to something finite before it ever
-// reaches the guard under test.
+// Non-finite values are handled as integers, never as doubles.
+//
+// A NaN or infinity held in a double-typed expression is not reliably a NaN or
+// infinity in a translation unit built with -ffast-math. That flag implies
+// -ffinite-math-only, which lets the compiler assume every floating-point
+// value crossing a function boundary is finite; Clang 22 acts on the
+// assumption hard enough that a NaN returned from a function, or handed to
+// std::complex's constructor, does not even reach memory. Only the object
+// representation survives, so the fixtures below write it with an integer
+// store into a double that already exists, and read it back by reference.
+constexpr std::uint64_t kQuietNanBits = UINT64_C(0x7FF8000000000000);
+constexpr std::uint64_t kSignalingNanBits = UINT64_C(0x7FF0000000000001);
+constexpr std::uint64_t kPositiveInfBits = UINT64_C(0x7FF0000000000000);
+constexpr std::uint64_t kNegativeInfBits = UINT64_C(0xFFF0000000000000);
+constexpr std::uint64_t kSmallestSubnormalBits = UINT64_C(0x0000000000000001);
+constexpr std::uint64_t kLargestNormalBits = UINT64_C(0x7FEFFFFFFFFFFFFF);
+
+// Overwrites the object representation of an existing double or complex.
+inline void poke_bits(double& target, std::uint64_t bits) noexcept {
+  std::memcpy(&target, &bits, sizeof bits);
+}
+
+inline void poke_bits(Complex& target, std::uint64_t re_bits,
+                      std::uint64_t im_bits) noexcept {
+  const std::uint64_t words[2] = {re_bits, im_bits};
+  static_assert(sizeof(Complex) == sizeof words,
+                "std::complex<double> must be two adjacent binary64 values");
+  std::memcpy(&target, words, sizeof words);
+}
+
+// Bit pattern of a finite double, for mixing finite and non-finite parts in
+// one poke_bits call.
+inline std::uint64_t bits_of(double finite_value) noexcept {
+  return std::bit_cast<std::uint64_t>(finite_value);
+}
+
+// A double whose representation is chosen bit for bit and lives in memory.
+// get() returns a reference so the value reaches the guard under test as a
+// load rather than as a by-value argument.
+class Slot {
+ public:
+  explicit Slot(std::uint64_t bits) noexcept { poke_bits(value_, bits); }
+  const double& get() const noexcept { return value_; }
+
+ private:
+  double value_ = 0.0;
+};
+
+// Finite values may still be built from bit patterns directly.
 constexpr double bits_to_double(std::uint64_t bits) {
   return std::bit_cast<double>(bits);
 }
 
-constexpr double quiet_nan() { return bits_to_double(UINT64_C(0x7FF8000000000000)); }
-constexpr double signaling_nan() { return bits_to_double(UINT64_C(0x7FF0000000000001)); }
-constexpr double positive_inf() { return bits_to_double(UINT64_C(0x7FF0000000000000)); }
-constexpr double negative_inf() { return bits_to_double(UINT64_C(0xFFF0000000000000)); }
-constexpr double smallest_subnormal() { return bits_to_double(UINT64_C(0x0000000000000001)); }
-constexpr double largest_normal() { return bits_to_double(UINT64_C(0x7FEFFFFFFFFFFFFF)); }
+constexpr double smallest_subnormal() { return bits_to_double(kSmallestSubnormalBits); }
+constexpr double largest_normal() { return bits_to_double(kLargestNormalBits); }
 
-// Launders a value through memory so the optimiser cannot carry a
+// Launders a finite value through memory so the optimiser cannot carry a
 // compile-time-known bit pattern into the caller and reason about it.
 inline double opaque(double x) {
   volatile double v = x;
