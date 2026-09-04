@@ -12,10 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The kernels are not written yet, so what is testable is the contract around
-// them: they report failure by return value, they do not throw, and they leave
-// the caller's output buffers alone. A caller written against this build is
-// already on the interface the real kernel will honour.
+// Interface-level contract, independent of which kernels are implemented.
+//
+// eigh has no implementation yet, so its failure report is exercised directly
+// here. svd_thin does, and its rejection paths (null arguments, non-positive
+// dimensions, non-finite input) are covered in test_svd_jacobi.cpp alongside
+// the factorisations they guard.
+//
+// What stays interesting at this level for both: failure travels by return
+// value and never by exception, and the signatures have not drifted from the
+// documented interface.
 
 #include <gtest/gtest.h>
 
@@ -36,16 +42,6 @@ using autonne_test::make_svd_case;
 constexpr Complex kSentinel(-12345.0, 6789.0);
 constexpr double kSentinelReal = -98765.0;
 
-TEST(ApiStubs, SvdThinReportsFailure) {
-  const auto c = make_svd_case(4, 3, {4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 8);
-  std::vector<Complex> u(12, kSentinel);
-  std::vector<double> s(3, kSentinelReal);
-  std::vector<Complex> v(9, kSentinel);
-
-  EXPECT_FALSE(autonne::svd_thin(c.m.data(), c.rows, c.cols, c.order, u.data(),
-                                 s.data(), v.data()));
-}
-
 TEST(ApiStubs, EighReportsFailure) {
   const auto c = make_eigh_case(4, {1.0, 2.0, 3.0, 4.0}, MatrixOrder::ColMajor, 9);
   std::vector<double> evals(4, kSentinelReal);
@@ -56,21 +52,43 @@ TEST(ApiStubs, EighReportsFailure) {
 }
 
 // On a false return the outputs are unspecified and the caller must not read
-// them. The stubs go further and touch nothing, which is what makes a
-// sentinel-based check possible at all; when the kernels land this test
-// documents the boundary rather than constraining it.
+// them. Both entry points go further and touch nothing at all, which is what
+// makes a sentinel check possible.
+//
+// This RECORDS that behaviour rather than requiring it. An implementation that
+// wrote a partial result before deciding to fail would still honour the
+// documented contract, and this test would be the thing to change rather than
+// the evidence of a defect.
 TEST(ApiStubs, FailureLeavesOutputBuffersUntouched) {
+  // A non-finite entry, so this is a real rejection inside the kernel rather
+  // than an argument check that returns before looking at the matrix.
   const auto c = make_svd_case(4, 3, {4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 10);
+  std::vector<Complex> m = c.m;
+  autonne_test::poke_bits(m[3], autonne_test::kQuietNanBits,
+                          autonne_test::bits_of(0.0));
+
   std::vector<Complex> u(12, kSentinel);
   std::vector<double> s(3, kSentinelReal);
   std::vector<Complex> v(9, kSentinel);
 
-  ASSERT_FALSE(autonne::svd_thin(c.m.data(), c.rows, c.cols, c.order, u.data(),
+  ASSERT_FALSE(autonne::svd_thin(m.data(), c.rows, c.cols, c.order, u.data(),
                                  s.data(), v.data()));
 
   for (const Complex& z : u) EXPECT_EQ(z, kSentinel);
   for (const double x : s) EXPECT_EQ(x, kSentinelReal);
   for (const Complex& z : v) EXPECT_EQ(z, kSentinel);
+
+  // eigh has no implementation, so every call is the failure path.
+  const auto e =
+      make_eigh_case(4, {1.0, 2.0, 3.0, 4.0}, MatrixOrder::ColMajor, 11);
+  std::vector<double> evals(4, kSentinelReal);
+  std::vector<Complex> evecs(16, kSentinel);
+
+  ASSERT_FALSE(
+      autonne::eigh(e.a.data(), e.n, e.order, evals.data(), evecs.data()));
+
+  for (const double x : evals) EXPECT_EQ(x, kSentinelReal);
+  for (const Complex& z : evecs) EXPECT_EQ(z, kSentinel);
 }
 
 // Failure is signalled by the return value only. Degenerate shapes are the

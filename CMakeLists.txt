@@ -125,7 +125,12 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_verify_eigh.cpp
     tests/test_hexfloat.cpp
     tests/test_api_stubs.cpp
+    tests/test_svd_jacobi.cpp
     tests/test_build_mode.cpp)
+
+  # The frozen corpus is read from disk rather than compiled in, so the same
+  # files can be checked against an implementation outside this repository.
+  set(AUTONNE_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 
   # Each variant compiles the library sources into its own binary rather than
   # linking the library target. verify.hpp is header-only and everything it
@@ -141,7 +146,8 @@ if(AUTONNE_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(${target} PRIVATE GTest::gtest_main autonne_warnings)
     target_compile_options(${target} PRIVATE ${ARG_FLAGS})
-    target_compile_definitions(${target} PRIVATE ${ARG_DEFINES})
+    target_compile_definitions(${target} PRIVATE ${ARG_DEFINES}
+      AUTONNE_TEST_DATA_DIR="${AUTONNE_TEST_DATA_DIR}")
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
 
     gtest_discover_tests(${target}
