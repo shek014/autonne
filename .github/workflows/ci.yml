@@ -97,6 +97,38 @@ jobs:
           cmake --build build-bench -j --target autonne_bench
           ./build-bench/bench/autonne_bench --repeats 5
 
+  # Address and undefined-behaviour sanitizers, with -fno-sanitize-recover so
+  # a report fails the run. The kernels index raw buffers and reinterpret
+  # object representations; nothing else in the suite would notice a read one
+  # past the end of a column.
+  sanitizers:
+    runs-on: ubuntu-24.04
+    name: asan-ubsan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18
+
+      - name: Configure
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DAUTONNE_SANITIZERS=address,undefined
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: ctest --test-dir build --output-on-failure
+
   windows-msvc:
     runs-on: windows-2022
     name: msvc-2022

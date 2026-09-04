@@ -110,6 +110,18 @@ run under both floating-point models.
   numpy's `zgesdd` / `zheevd` computed for it. Every one is factored, judged
   by the harness, and compared with that reference to LAPACK's own absolute
   accuracy, in every build variant.
+- **The two floating-point models agree.** The kernel is also built into one
+  small executable per model, both are run on every corpus matrix, and a third
+  program diffs what they wrote. Bit equality is not required and would be the
+  wrong test, since `-ffast-math` may reassociate; what is required is that the
+  spectra agree to `1e-11` relative and that each singular vector agrees up to
+  a phase, with degenerate groups excluded because any unitary mixing inside
+  one is a correct answer. Measured divergence is around `1e-14` on the spectra
+  and `1e-8` on the vectors.
+- **Any scale.** The harness measures on the input scaled by a power of two,
+  so it neither overflows on a matrix near `1e210` nor, more dangerously,
+  underflows to all-zeros on one near `1e-170` and accepts whatever it is
+  handed. Both directions are tested, in both floating-point models.
 
 ## Design constraints
 
@@ -144,6 +156,15 @@ and hard zero blocks are the common case here, not the exception. Correctness on
 such matrices is the primary design target, which is why the kernel is Jacobi
 rather than bidiagonalisation plus QR or divide-and-conquer: rotations keep
 every factor orthonormal by construction, whatever the spectrum does.
+
+**A comparison between floating-point models has to cross a process boundary.**
+Two variants of the same code linked into one binary do not measure two
+floating-point models. The inline helpers have vague linkage, the linker keeps
+one copy of each without regard to the flags it was built under, and the
+comparison ends up reading link order. So `autonne_dump` is built once per
+model, both executables are run on the same frozen matrix, and `autonne_compare`
+diffs the files. It is the same argument as the one about entry points, applied
+to measurement rather than to shipping code.
 
 **Verification is the caller's, not ours.** Consumers are expected to check every
 factorisation against the matrix it came from. autonne is judged by that check
@@ -239,9 +260,14 @@ CONFIG)` works too; CI builds `tests/consumer` that way, with `-ffast-math`,
 against the installed tree.
 
 The suite is built three times -- strict, fast-math, and strict with the
-hand-rolled accessor path -- and `ctest` runs all of them. The benchmark is
+hand-rolled accessor path -- and `ctest` runs all of them, along with the
+cross-binary comparison of the two floating-point models. The benchmark is
 opt-in (`-DAUTONNE_BUILD_BENCHMARKS=ON`) and is the only target that fetches
 Eigen.
+
+`-DAUTONNE_SANITIZERS=address,undefined` builds everything under those
+sanitizers with `-fno-sanitize-recover`, which is how CI runs the suite on
+one job.
 
 ## Licence
 
