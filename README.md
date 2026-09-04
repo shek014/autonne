@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/shek014/autonne/actions/workflows/ci.yml/badge.svg)](https://github.com/shek014/autonne/actions/workflows/ci.yml)
 
-Thin singular value decomposition and Hermitian eigendecomposition for small
-dense complex matrices.
+Truncated singular value decomposition and Hermitian eigendecomposition for
+small dense complex matrices.
 
 Given a complex matrix, autonne returns its singular directions and the full
 spectrum. It targets the case where matrices are small (n ≤ 128), shapes recur,
