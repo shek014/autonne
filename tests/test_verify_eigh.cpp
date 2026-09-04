@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -162,6 +163,35 @@ TEST(VerifyEigh, FlagsNonHermitianInput) {
   const EighReport r = check(c);
   EXPECT_FALSE(r.input_hermitian);
   EXPECT_FALSE(r.ok());
+}
+
+// The same pair as in test_verify_svd.cpp, for the reason given there: the
+// harness must measure a matrix at any scale, and must not accept a wrong
+// decomposition of a tiny one because every squared quantity underflowed.
+TEST(VerifyEigh, AcceptsACorrectDecompositionOfAHugeMatrix) {
+  for (const int exponent : {700, 900, 1000}) {
+    const double factor = std::ldexp(1.0, exponent);
+    EighCase c = make_eigh_case(4, {-3.0, -0.5, 1.0, 4.0}, MatrixOrder::ColMajor, 3101);
+    for (Complex& z : c.a) z *= factor;
+    for (double& x : c.evals) x *= factor;
+    EXPECT_TRUE(ReportAccepted(check(c))) << "2^" << exponent;
+  }
+}
+
+TEST(VerifyEigh, RejectsAWrongDecompositionOfATinyMatrix) {
+  for (const int exponent : {-700, -900, -1000}) {
+    const double factor = std::ldexp(1.0, exponent);
+    EighCase c = make_eigh_case(4, {-3.0, -0.5, 1.0, 4.0}, MatrixOrder::ColMajor, 3102);
+    for (Complex& z : c.a) z *= factor;
+    for (double& x : c.evals) x *= factor;
+    ASSERT_TRUE(check(c).ok()) << "2^" << exponent;
+
+    EighCase wrong = c;
+    wrong.evals[3] *= 2.0;
+    const EighReport r = check(wrong);
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+    EXPECT_FALSE(r.ok()) << "2^" << exponent;
+  }
 }
 
 TEST(VerifyEigh, RejectsMalformedArguments) {

@@ -70,18 +70,75 @@ bool all_finite(const double* v, int n) noexcept {
   return true;
 }
 
-// Sum of |a(i,j)|^2. Squared norms are accumulated rather than square-rooted
-// per element so that the energy identities below compare like with like.
+// Sum of |scale * a(i,j)|^2. Squared norms are accumulated rather than
+// square-rooted per element so that the energy identities below compare like
+// with like, and every caller passes a scale for the reason set out at
+// scale_exponent below.
 template <typename View>
-double frobenius_sq(const View& a) noexcept {
+double frobenius_sq(const View& a, double scale) noexcept {
   double acc = 0.0;
   for (int j = 0; j < cols_of(a); ++j) {
     for (int i = 0; i < rows_of(a); ++i) {
       const std::complex<double> z = at(a, i, j);
-      acc += z.real() * z.real() + z.imag() * z.imag();
+      const double re = z.real() * scale;
+      const double im = z.imag() * scale;
+      acc += re * re + im * im;
     }
   }
   return acc;
+}
+
+// Largest |re| or |im| across a view, and across a real vector. Non-finite
+// entries are skipped: the finiteness verdict reports them, and they must not
+// decide the scaling.
+template <typename View>
+double max_component(const View& a) noexcept {
+  double m = 0.0;
+  for (int j = 0; j < cols_of(a); ++j) {
+    for (int i = 0; i < rows_of(a); ++i) {
+      const std::complex<double> z = at(a, i, j);
+      if (fp_bad(z)) continue;
+      const double re = std::fabs(z.real());
+      const double im = std::fabs(z.imag());
+      if (re > m) m = re;
+      if (im > m) m = im;
+    }
+  }
+  return m;
+}
+
+double max_component(const double* v, int n) noexcept {
+  double m = 0.0;
+  for (int i = 0; i < n; ++i) {
+    if (fp_bad(v[i])) continue;
+    const double a = std::fabs(v[i]);
+    if (a > m) m = a;
+  }
+  return m;
+}
+
+// The exponent e for which ldexp(x, -e) puts the largest component of the
+// measured objects in [0.5, 1).
+//
+// Every quantity below is measured on the input scaled by 2^-e rather than on
+// the input itself, because the sum of squares of an unscaled matrix is not
+// representable across the range of matrices a caller may hold. A matrix with
+// entries near 1e210 has a Frobenius norm squared near 1e420, which overflows
+// to infinity and rejects a perfectly good factorisation; one with entries
+// near 1e-170 has squares that underflow to zero, so the residual, the bound
+// and the energies all come out exactly zero and the check silently accepts
+// whatever it was given. The second failure is the dangerous one.
+//
+// Scaling by a power of two is exact, and it commutes with everything here:
+// the residual and the norms scale by 2^-e, the energies by 2^-2e, and the
+// ratios that decide each verdict do not move at all. The reported fields are
+// scaled back afterwards, which is the only step that can overflow, and only
+// for a matrix whose true Frobenius norm is itself past the end of binary64.
+int scale_exponent(double largest) noexcept {
+  if (!(largest > 0.0) || fp_bad(largest)) return 0;
+  int e = 0;
+  (void)std::frexp(largest, &e);
+  return e;
 }
 
 // ||X^* X - I||_F for an n x k matrix X.
@@ -138,14 +195,21 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
   const double eps = tol.eps;
   const double dim = static_cast<double>(max_int(rows, cols));
 
-  const double energy_M = frobenius_sq(Mv);
-  r.norm_M = std::sqrt(energy_M);
+  // Everything from here is measured on the input scaled by `scale`, an exact
+  // power of two; see scale_exponent. `s_max` stays unscaled because the
+  // ordering slack it feeds is compared against unscaled differences.
+  const double m_max = max_component(Mv);
+  const double s_max = max_component(S, k);
+  const int exponent = scale_exponent(m_max > s_max ? m_max : s_max);
+  const double scale = std::ldexp(1.0, -exponent);
+
+  const double energy_M = frobenius_sq(Mv, scale);
+  r.norm_M = std::ldexp(std::sqrt(energy_M), exponent);
 
   double energy_S = 0.0;
-  double s_max = 0.0;
   for (int t = 0; t < k; ++t) {
-    energy_S += S[t] * S[t];
-    if (!fp_bad(S[t]) && S[t] > s_max) s_max = S[t];
+    const double scaled = S[t] * scale;
+    energy_S += scaled * scaled;
   }
 
   // The spectrum verdicts stand on their own: a NaN in S fails them here
@@ -170,32 +234,40 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
   r.nonnegative = nonneg;
   r.descending = desc;
 
-  r.energy_defect = energy_S - energy_M;
-  r.energy_bound = tol.spectrum_factor * dim * eps * energy_M;
-  const double energy_defect_abs = std::fabs(r.energy_defect);
-  r.energy_ok = r.truncated ? within(r.energy_defect, r.energy_bound)
-                            : within(energy_defect_abs, r.energy_bound);
+  const double energy_defect = energy_S - energy_M;
+  const double energy_bound = tol.spectrum_factor * dim * eps * energy_M;
+  const double energy_defect_abs = std::fabs(energy_defect);
+  r.energy_ok = r.truncated ? within(energy_defect, energy_bound)
+                            : within(energy_defect_abs, energy_bound);
+  r.energy_defect = std::ldexp(energy_defect, 2 * exponent);
+  r.energy_bound = std::ldexp(energy_bound, 2 * exponent);
 
   // Energy the kept spectrum does not account for. Clamped: rounding can push
   // the sum a few ulps past ||M||_F^2 on an untruncated factorisation.
-  r.discarded_energy = (energy_M > energy_S) ? (energy_M - energy_S) : 0.0;
+  const double discarded = (energy_M > energy_S) ? (energy_M - energy_S) : 0.0;
+  r.discarded_energy = std::ldexp(discarded, 2 * exponent);
 
-  // Backward error, in amplitude form.
+  // Backward error, in amplitude form. The reconstruction is formed from the
+  // scaled spectrum, so it is compared against the scaled matrix.
   double residual_sq = 0.0;
   for (int j = 0; j < cols; ++j) {
     for (int i = 0; i < rows; ++i) {
       std::complex<double> approx(0.0, 0.0);
       for (int t = 0; t < k; ++t) {
-        approx += at(Uv, i, t) * S[t] * std::conj(at(Vv, j, t));
+        approx += at(Uv, i, t) * (S[t] * scale) * std::conj(at(Vv, j, t));
       }
-      const std::complex<double> d = at(Mv, i, j) - approx;
+      const std::complex<double> target = at(Mv, i, j) * scale;
+      const std::complex<double> d = target - approx;
       residual_sq += d.real() * d.real() + d.imag() * d.imag();
     }
   }
-  r.residual = std::sqrt(residual_sq);
-  r.backward_bound =
-      std::sqrt(r.discarded_energy) + tol.backward_factor * dim * eps * r.norm_M;
-  r.backward_ok = r.finite && within(r.residual, r.backward_bound);
+  const double residual = std::sqrt(residual_sq);
+  const double norm_M_scaled = std::sqrt(energy_M);
+  const double backward_bound =
+      std::sqrt(discarded) + tol.backward_factor * dim * eps * norm_M_scaled;
+  r.backward_ok = r.finite && within(residual, backward_bound);
+  r.residual = std::ldexp(residual, exponent);
+  r.backward_bound = std::ldexp(backward_bound, exponent);
 
   // Orthonormality of the kept columns.
   r.u_ortho_residual = orthonormality_residual(Uv);
@@ -227,30 +299,39 @@ EighReport check_eigh(const std::complex<double>* A, int n, MatrixOrder order,
   const double eps = tol.eps;
   const double dim = static_cast<double>(n);
 
-  const double energy_A = frobenius_sq(Av);
-  r.norm_A = std::sqrt(energy_A);
+  // As in check_svd, every measurement is taken on the input scaled by an
+  // exact power of two; see scale_exponent.
+  const double a_max = max_component(Av);
+  const double lambda_max = max_component(evals, n);
+  const int exponent = scale_exponent(a_max > lambda_max ? a_max : lambda_max);
+  const double scale = std::ldexp(1.0, -exponent);
+
+  const double energy_A = frobenius_sq(Av, scale);
+  const double norm_A_scaled = std::sqrt(energy_A);
+  r.norm_A = std::ldexp(norm_A_scaled, exponent);
 
   double herm_sq = 0.0;
   double trace = 0.0;
   for (int j = 0; j < n; ++j) {
-    trace += at(Av, j, j).real();
+    trace += at(Av, j, j).real() * scale;
     for (int i = 0; i < n; ++i) {
-      const std::complex<double> d = at(Av, i, j) - std::conj(at(Av, j, i));
+      const std::complex<double> d =
+          (at(Av, i, j) - std::conj(at(Av, j, i))) * scale;
       herm_sq += d.real() * d.real() + d.imag() * d.imag();
     }
   }
-  r.hermitian_residual = std::sqrt(herm_sq);
-  r.hermitian_bound = tol.backward_factor * dim * eps * r.norm_A;
-  r.input_hermitian = within(r.hermitian_residual, r.hermitian_bound);
+  const double hermitian_residual = std::sqrt(herm_sq);
+  const double hermitian_bound = tol.backward_factor * dim * eps * norm_A_scaled;
+  r.input_hermitian = within(hermitian_residual, hermitian_bound);
+  r.hermitian_residual = std::ldexp(hermitian_residual, exponent);
+  r.hermitian_bound = std::ldexp(hermitian_bound, exponent);
 
-  double lambda_max = 0.0;
   double energy_L = 0.0;
   double sum_L = 0.0;
   for (int t = 0; t < n; ++t) {
-    energy_L += evals[t] * evals[t];
-    sum_L += evals[t];
-    const double m = std::fabs(evals[t]);
-    if (!fp_bad(m) && m > lambda_max) lambda_max = m;
+    const double scaled = evals[t] * scale;
+    energy_L += scaled * scaled;
+    sum_L += scaled;
   }
 
   // As in check_svd: guard the operands in memory, then subtract.
@@ -266,33 +347,39 @@ EighReport check_eigh(const std::complex<double>* A, int n, MatrixOrder order,
   }
   r.ascending = asc;
 
-  // A Q - Q diag(lambda), column by column.
+  // A Q - Q diag(lambda), column by column, on the scaled matrix.
   double residual_sq = 0.0;
   for (int j = 0; j < n; ++j) {
     for (int i = 0; i < n; ++i) {
       std::complex<double> acc(0.0, 0.0);
-      for (int t = 0; t < n; ++t) acc += at(Av, i, t) * at(Qv, t, j);
-      const std::complex<double> d = acc - at(Qv, i, j) * evals[j];
+      for (int t = 0; t < n; ++t) acc += (at(Av, i, t) * scale) * at(Qv, t, j);
+      const std::complex<double> d = acc - at(Qv, i, j) * (evals[j] * scale);
       residual_sq += d.real() * d.real() + d.imag() * d.imag();
     }
   }
-  r.residual = std::sqrt(residual_sq);
-  r.backward_bound = tol.backward_factor * dim * eps * r.norm_A;
-  r.backward_ok = r.finite && within(r.residual, r.backward_bound);
+  const double residual = std::sqrt(residual_sq);
+  const double backward_bound = tol.backward_factor * dim * eps * norm_A_scaled;
+  r.backward_ok = r.finite && within(residual, backward_bound);
+  r.residual = std::ldexp(residual, exponent);
+  r.backward_bound = std::ldexp(backward_bound, exponent);
 
   r.q_ortho_residual = orthonormality_residual(Qv);
   r.ortho_bound = tol.ortho_factor * dim * eps;
   r.q_orthonormal = r.finite && within(r.q_ortho_residual, r.ortho_bound);
 
-  r.trace_defect = sum_L - trace;
-  r.trace_bound = tol.spectrum_factor * dim * eps * r.norm_A;
-  const double trace_defect_abs = std::fabs(r.trace_defect);
-  r.trace_ok = r.finite && within(trace_defect_abs, r.trace_bound);
+  const double trace_defect = sum_L - trace;
+  const double trace_bound = tol.spectrum_factor * dim * eps * norm_A_scaled;
+  const double trace_defect_abs = std::fabs(trace_defect);
+  r.trace_ok = r.finite && within(trace_defect_abs, trace_bound);
+  r.trace_defect = std::ldexp(trace_defect, exponent);
+  r.trace_bound = std::ldexp(trace_bound, exponent);
 
-  r.energy_defect = energy_L - energy_A;
-  r.energy_bound = tol.spectrum_factor * dim * eps * energy_A;
-  const double energy_defect_abs = std::fabs(r.energy_defect);
-  r.energy_ok = r.finite && within(energy_defect_abs, r.energy_bound);
+  const double energy_defect = energy_L - energy_A;
+  const double energy_bound = tol.spectrum_factor * dim * eps * energy_A;
+  const double energy_defect_abs = std::fabs(energy_defect);
+  r.energy_ok = r.finite && within(energy_defect_abs, energy_bound);
+  r.energy_defect = std::ldexp(energy_defect, 2 * exponent);
+  r.energy_bound = std::ldexp(energy_bound, 2 * exponent);
 
   return r;
 }
