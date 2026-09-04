@@ -84,6 +84,18 @@ jobs:
           cmake --build build-consumer -j
           ./build-consumer/autonne_consumer
 
+      # FetchContent is how the consuming project will take this, so the
+      # subproject path is checked too: it must add no test targets and fetch
+      # no GoogleTest.
+      - name: Consume as a subproject
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S tests/subproject -B build-subproject -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-subproject -j
+          ./build-subproject/autonne_subproject_check
+
       # The benchmark fetches Eigen; one job keeps it compiling and reports
       # the numbers in the log.
       - name: Build and run benchmark
