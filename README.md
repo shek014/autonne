@@ -226,6 +226,17 @@ size, and within a factor of 1.5 on decaying and rank-deficient input at
 that precedes them is a few milliseconds at 128 and accounts for most of the
 flat-spectrum time, where one or two sweeps suffice.
 
+Which sizes matter is a separate question, and one the consuming project has
+open as
+[verycareful/lindblad#100](https://github.com/verycareful/lindblad/issues/100).
+Its comparison corpus builds every scaling circuit with three layers of
+nearest-neighbour two-qubit gates, and each cut is crossed by one such gate
+per layer, so the Schmidt rank across any cut is bounded by `2³ = 8` and the
+matrices reaching this path are at most 16×16. That is a bound from reading
+the generator, not a measurement of what the circuits reach. If it holds, the
+sizes that actually run are the ones where autonne is ahead, and the 128×128
+column describes a path that corpus never enters.
+
 `eigh` is a plain cyclic Jacobi and pays for its accuracy guarantees: at
 128×128 it takes 61 ms against 5 ms for Eigen's tridiagonalisation-based
 solver, and about ten times longer at every size. A tridiagonal path would
