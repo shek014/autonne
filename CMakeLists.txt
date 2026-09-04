@@ -26,14 +26,16 @@ else()
 endif()
 
 option(AUTONNE_BUILD_TESTS "Build the autonne test suite" ${AUTONNE_IS_TOP_LEVEL})
+option(AUTONNE_BUILD_BENCHMARKS "Build the benchmark against Eigen (fetches Eigen)" OFF)
+option(AUTONNE_INSTALL "Generate install and package-config rules" ${AUTONNE_IS_TOP_LEVEL})
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# autonne depends on no linear algebra library. Eigen will appear later as a
-# baseline inside a benchmark target only, and must never become a dependency
-# of the library or of the test suite.
+# autonne depends on no linear algebra library. Eigen is fetched only when
+# AUTONNE_BUILD_BENCHMARKS is on, as the baseline inside the benchmark target,
+# and must never become a dependency of the library or of the test suite.
 
 # verify.cpp is a source, not a header, so that check_svd and check_eigh have
 # exactly one definition per binary, built under this file's floating-point
@@ -56,12 +58,21 @@ set(AUTONNE_PRIVATE_HEADERS
 
 # --- shared compile settings -------------------------------------------------
 
-add_library(autonne_warnings INTERFACE)
+# The warning set, as a variable rather than an interface target: the library
+# is exported, and a private link to an interface target would drag that
+# target into the export set.
 if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
-  target_compile_options(autonne_warnings INTERFACE -Wall -Wextra -Werror)
+  set(AUTONNE_WARNING_FLAGS -Wall -Wextra -Werror)
 elseif(MSVC)
-  target_compile_options(autonne_warnings INTERFACE /W4 /WX)
+  # /Zc:__cplusplus makes MSVC report the language standard it is actually
+  # compiling, which the build-mode test reads.
+  set(AUTONNE_WARNING_FLAGS /W4 /WX /Zc:__cplusplus)
+else()
+  set(AUTONNE_WARNING_FLAGS "")
 endif()
+
+add_library(autonne_warnings INTERFACE)
+target_compile_options(autonne_warnings INTERFACE ${AUTONNE_WARNING_FLAGS})
 
 # The two floating-point modes the test suite is built under. Both must pass:
 # the finiteness guards exist precisely because -ffast-math lets a compiler
@@ -87,14 +98,48 @@ add_library(autonne STATIC ${AUTONNE_SOURCES} ${AUTONNE_HEADERS} ${AUTONNE_PRIVA
 add_library(autonne::autonne ALIAS autonne)
 
 target_include_directories(autonne
-  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
 target_compile_features(autonne PUBLIC cxx_std_23)
-target_link_libraries(autonne PRIVATE autonne_warnings)
-target_compile_options(autonne PRIVATE ${AUTONNE_STRICT_FP_FLAGS})
+target_compile_options(autonne PRIVATE ${AUTONNE_WARNING_FLAGS} ${AUTONNE_STRICT_FP_FLAGS})
 
 set_target_properties(autonne PROPERTIES
   CXX_EXTENSIONS OFF
   POSITION_INDEPENDENT_CODE ON)
+
+# --- install -----------------------------------------------------------------
+
+if(AUTONNE_INSTALL)
+  include(GNUInstallDirs)
+  include(CMakePackageConfigHelpers)
+
+  install(TARGETS autonne EXPORT autonneTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  install(DIRECTORY include/autonne DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+  set(AUTONNE_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/autonne)
+  install(EXPORT autonneTargets
+    NAMESPACE autonne::
+    FILE autonneTargets.cmake
+    DESTINATION ${AUTONNE_CMAKE_DIR})
+
+  configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/autonneConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/autonneConfig.cmake
+    INSTALL_DESTINATION ${AUTONNE_CMAKE_DIR})
+  write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/autonneConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+  install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/autonneConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/autonneConfigVersion.cmake
+    DESTINATION ${AUTONNE_CMAKE_DIR})
+endif()
 
 # --- tests -------------------------------------------------------------------
 
@@ -131,6 +176,7 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_api.cpp
     tests/test_svd.cpp
     tests/test_eigh.cpp
+    tests/test_corpus.cpp
     tests/test_build_mode.cpp)
 
   # Each variant compiles the library sources into its own binary rather than
@@ -148,7 +194,8 @@ if(AUTONNE_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(${target} PRIVATE GTest::gtest_main autonne_warnings)
     target_compile_options(${target} PRIVATE ${ARG_FLAGS})
-    target_compile_definitions(${target} PRIVATE ${ARG_DEFINES})
+    target_compile_definitions(${target} PRIVATE ${ARG_DEFINES}
+      AUTONNE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus")
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
 
     gtest_discover_tests(${target}
@@ -170,4 +217,10 @@ if(AUTONNE_BUILD_TESTS)
   autonne_add_test_variant(strict_nomdspan
     FLAGS ${AUTONNE_STRICT_FP_FLAGS}
     DEFINES AUTONNE_TEST_FAST_MATH=0 AUTONNE_NO_STD_MDSPAN=1)
+endif()
+
+# --- benchmark ---------------------------------------------------------------
+
+if(AUTONNE_BUILD_BENCHMARKS)
+  add_subdirectory(bench)
 endif()
