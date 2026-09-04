@@ -118,6 +118,16 @@ run under both floating-point models.
   a phase, with degenerate groups excluded because any unitary mixing inside
   one is a correct answer. Measured divergence is around `1e-14` on the spectra
   and `1e-8` on the vectors.
+- **Agreement with LAPACK beyond the frozen set.** `tools/lapack_sweep.py`
+  draws matrices nobody chose -- arbitrary shapes, columns graded over thirty
+  decades, exact rank deficiency down to the zero matrix, spectra repeated
+  exactly, and whole matrices multiplied by `2^k` for `|k|` up to 900 -- and
+  compares each spectrum against numpy. Over 700 of them across the strict
+  build, the fast-math build and an MSVC build, on three seeds, the worst
+  relative disagreement was `3.8e-15`, about seventeen ulps, and the fast-math
+  build was no less accurate than the strict one. It is a developer tool, not
+  a CI test: a failure there is a lead to turn into a fixed case in
+  `tests/corpus`.
 - **Any scale.** The harness measures on the input scaled by a power of two,
   so it neither overflows on a matrix near `1e210` nor, more dangerously,
   underflows to all-zeros on one near `1e-170` and accepts whatever it is
