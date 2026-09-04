@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  build:
+  linux:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -20,6 +20,7 @@ jobs:
             cc: gcc-14
             cxx: g++-14
             apt: g++-14
+            bench: true
           - name: clang-18
             cc: clang-18
             cxx: clang++-18
@@ -62,6 +63,70 @@ jobs:
 
       # Every entry point has one strong definition per binary, so the
       # floating-point flags on its translation unit are the flags that apply.
+      - name: Check symbol linkage
+        run: |
+          tools/check_symbols.sh \
+            build/libautonne.a \
+            build/autonne_tests_strict \
+            build/autonne_tests_fastmath \
+            build/autonne_tests_strict_nomdspan
+
+      # The package config must work for a consumer that installs autonne
+      # rather than adding it as a subdirectory.
+      - name: Install and consume
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake --install build --prefix "$PWD/prefix"
+          cmake -S tests/consumer -B build-consumer \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build build-consumer -j
+          ./build-consumer/autonne_consumer
+
+      # The benchmark fetches Eigen; one job keeps it compiling and reports
+      # the numbers in the log.
+      - name: Build and run benchmark
+        if: ${{ matrix.bench }}
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release \
+            -DAUTONNE_BUILD_TESTS=OFF -DAUTONNE_BUILD_BENCHMARKS=ON
+          cmake --build build-bench -j --target autonne_bench
+          ./build-bench/bench/autonne_bench --repeats 5
+
+  windows-msvc:
+    runs-on: windows-2022
+    name: msvc-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  macos:
+    runs-on: macos-14
+    name: appleclang
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
       - name: Check symbol linkage
         run: |
           tools/check_symbols.sh \

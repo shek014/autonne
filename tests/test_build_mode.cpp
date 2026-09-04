@@ -53,6 +53,11 @@ TEST(BuildMode, VariantMatchesItsFloatingPointFlags) {
 // The library must build as C++23; this is what makes std::bit_cast and
 // std::mdspan available to the headers above.
 TEST(BuildMode, LanguageStandardIsCpp23) {
+#if defined(_MSVC_LANG)
+  // MSVC reports the standard in _MSVC_LANG unconditionally and in
+  // __cplusplus only under /Zc:__cplusplus, which the build sets; check both.
+  EXPECT_GE(_MSVC_LANG, 202100L);
+#endif
   EXPECT_GE(__cplusplus, 202100L);
 }
 
