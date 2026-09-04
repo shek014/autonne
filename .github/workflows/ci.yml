@@ -74,6 +74,9 @@ jobs:
       # The package config must work for a consumer that installs autonne
       # rather than adding it as a subdirectory.
       - name: Install and consume
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
         run: |
           cmake --install build --prefix "$PWD/prefix"
           cmake -S tests/consumer -B build-consumer \
