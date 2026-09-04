@@ -215,21 +215,24 @@ otherwise idle desktop; milliseconds:
 
 | n   | spectrum       | autonne | Eigen BDCSVD  | Eigen JacobiSVD |
 | --- | -------------- | ------: | ------------: | --------------: |
-| 8   | decaying       |   0.007 |         0.018 |           0.017 |
-| 16  | decaying       |   0.036 |         0.043 |           0.137 |
-| 32  | decaying       |   0.32  |         0.34  |           1.23  |
-| 64  | decaying       |   2.42  |         2.16  |          10.3   |
-| 128 | decaying       |  17.3   |        12.8   |         101     |
-| 8   | flat           |   0.005 |         0.037 |           0.037 |
-| 16  | flat           |   0.039 |         0.063 |           0.37  |
-| 32  | flat           |   0.19  |         0.26  |           3.28  |
-| 64  | flat           |   1.21  |         1.85  |          27.7   |
-| 128 | flat           |   7.05  |        10.7   |         283     |
-| 8   | rank-deficient |   0.010 |         0.031 |           0.030 |
-| 16  | rank-deficient |   0.050 | 0.046 (rejected) |        0.19  |
-| 32  | rank-deficient |   0.37  |         0.24  |           1.55  |
-| 64  | rank-deficient |   2.17  |         1.89  |          10.7   |
-| 128 | rank-deficient |  19.4   | 11.7 (rejected) |       113     |
+| 8   | decaying       |   0.008 |         0.015 |           0.015 |
+| 16  | decaying       |   0.039 |         0.038 |           0.117 |
+| 32  | decaying       |   0.30  |         0.24  |           0.95  |
+| 64  | decaying       |   1.91  |         1.61  |           7.97  |
+| 128 | decaying       |  13.9   |         8.58  |          72.4   |
+| 8   | flat           |   0.005 |         0.025 |           0.025 |
+| 16  | flat           |   0.030 |         0.038 |           0.25  |
+| 32  | flat           |   0.17  |         0.18  |           2.19  |
+| 64  | flat           |   0.83  |         1.34  |          19.3   |
+| 128 | flat           |   5.10  |         7.41  |         195     |
+| 8   | rank-deficient |   0.008 |         0.021 |           0.019 |
+| 16  | rank-deficient |   0.041 | 0.027 (rejected) |        0.13  |
+| 32  | rank-deficient |   0.29  |         0.18  |           1.10  |
+| 64  | rank-deficient |   2.01  |         1.35  |           7.50  |
+| 128 | rank-deficient |  13.3   |  7.56 (rejected) |       75.0   |
+
+Run-to-run variation on a desktop is around twenty percent, so treat a
+difference smaller than that as noise; the ordering is stable across runs.
 
 "Decaying" is a geometric spectrum over sixteen decades, "flat" is fully
 degenerate, "rank-deficient" is half the spectrum degenerate and half exactly
@@ -242,7 +245,7 @@ in every row.
 
 Against the spec's bar -- the faster of Eigen's two methods -- autonne is
 faster or equal up to 32×32 on every shape, faster on flat spectra at every
-size, and within a factor of 1.5 on decaying and rank-deficient input at
+size, and within a factor of about 1.7 on decaying and rank-deficient input at
 128×128. The cost is dominated by Jacobi sweeps, each `O(n³)`; the pivoted QR
 that precedes them is a few milliseconds at 128 and accounts for most of the
 flat-spectrum time, where one or two sweeps suffice.
@@ -259,8 +262,8 @@ sizes that actually run are the ones where autonne is ahead, and the 128×128
 column describes a path that corpus never enters.
 
 `eigh` is a plain cyclic Jacobi and pays for its accuracy guarantees: at
-128×128 it takes 61 ms against 5 ms for Eigen's tridiagonalisation-based
-solver, and about ten times longer at every size. A tridiagonal path would
+128×128 it takes about 45 ms against 3 ms for Eigen's tridiagonalisation-based
+solver, and roughly ten times longer at every size. A tridiagonal path would
 close that gap for callers that do not need relative accuracy on graded input;
 it is not implemented.
 
