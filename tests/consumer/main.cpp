@@ -50,9 +50,16 @@ int main() {
   }
 
   // A NaN written as bits, from a fast-math translation unit, must be refused.
+  // The bits go into the real part through the double[2] view that
+  // [complex.numbers] guarantees, rather than over the complex object itself:
+  // GCC's -Wclass-memaccess rejects a memcpy into any non-trivial class type.
+  // Building the NaN as a double value would not do either -- in a fast-math
+  // translation unit the compiler may assume it away before it reaches memory,
+  // which is the whole reason the guard reads the representation.
   std::vector<Complex> bad = m;
   const std::uint64_t nan_bits = UINT64_C(0x7FF8000000000000);
-  std::memcpy(&bad[4], &nan_bits, sizeof nan_bits);
+  double(&parts)[2] = reinterpret_cast<double(&)[2]>(bad[4]);
+  std::memcpy(&parts[0], &nan_bits, sizeof nan_bits);
   if (autonne::svd_thin(bad.data(), rows, cols, autonne::MatrixOrder::ColMajor,
                         u.data(), s.data(), v.data())) {
     std::puts("svd_thin accepted a NaN");
