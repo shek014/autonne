@@ -1,0 +1,5 @@
+autonne-hexfloat 1 matrix svd_theta_2x2 2 2 rowmajor
+0x1.bc15000518544p-4 0x0p+0
+0x1.20be5de040e23p-2 0x1.e7f221f02b8b9p-4
+0x1.516aadf01ed84p-1 -0x1.336d2d971a61bp-1
+0x1.0ed8b74780b79p-3 -0x1.259ee3a68b962p-2
