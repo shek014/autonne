@@ -567,4 +567,31 @@ TEST(Svd, FactorsLargeDegenerateRankDeficientMatrix) {
   EXPECT_TRUE(SpectrumClose(r.s, c.s, spectrum_tol(128, 128, 1.0), true));
 }
 
+
+// Rows and columns graded independently, each over more than the 1024 binary
+// decades in which a ratio of magnitudes is representable. Choosing which of
+// A and A^* to factor compares the row spread against the column spread, and
+// computing either as hi / lo overflows here: both come out infinite, the
+// comparison degenerates, and the orientation is decided by which branch of
+// `inf > inf` happens to win. The kernel takes the difference of the binary
+// exponents instead, which is exact and cannot overflow.
+TEST(Svd, FactorsMatricesGradedInBothRowsAndColumns) {
+  for (const auto& grading : {std::pair<int, int>{180, 190}, {190, 180},
+                              {400, 40}, {40, 400}, {350, 350}}) {
+    const int n = 6;
+    std::vector<Complex> m(static_cast<std::size_t>(n) * n);
+    for (int i = 0; i < n; ++i) {
+      for (int j = 0; j < n; ++j) {
+        const double v = 1.0 + 0.1 * i + 0.01 * j;
+        m[static_cast<std::size_t>(j) * n + i] =
+            Complex(std::ldexp(v, -grading.first * i - grading.second * j), 0.0);
+      }
+    }
+    const SvdResult r = run_svd(m.data(), n, n, MatrixOrder::ColMajor);
+    ASSERT_TRUE(r.ok) << grading.first << "/" << grading.second;
+    EXPECT_TRUE(SvdAccepted(check(m.data(), n, n, MatrixOrder::ColMajor, r)))
+        << grading.first << "/" << grading.second;
+  }
+}
+
 }  // namespace
