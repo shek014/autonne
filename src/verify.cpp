@@ -40,6 +40,16 @@
 namespace autonne {
 namespace verify {
 
+// Reads the macro in the translation unit whose floating-point model is the
+// one in question. See the declaration in verify.hpp.
+bool built_with_fast_math() noexcept {
+#if defined(__FAST_MATH__)
+  return true;
+#else
+  return false;
+#endif
+}
+
 namespace {
 
 using autonne::detail::at;
