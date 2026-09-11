@@ -134,7 +134,7 @@ if(AUTONNE_INSTALL)
   write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/autonneConfigVersion.cmake
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion)
+    COMPATIBILITY SameMinorVersion)
   install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/autonneConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/autonneConfigVersion.cmake
