@@ -173,6 +173,19 @@ consumer mixing `-ffast-math` and strict files would run whichever copy won the
 link. The kernels' private helpers have internal linkage for the same reason.
 CI checks the linkage with `nm` (`tools/check_symbols.sh`).
 
+**A strict judge.** One definition is not enough on its own: it does not say
+which one. The harness's residual, norms and orthonormality sums are ordinary
+reductions, so a `-ffast-math` build of `verify.cpp` may reassociate them and
+reach a different number, compared against the same fixed tolerance. That is
+tolerable in a kernel, whose output the harness judges afterwards; it is not
+tolerable in the harness, because nothing judges the judge. `src/verify.cpp` is
+therefore compiled with strict floating point in every build variant, including
+the fast-math one, so that a fast-math kernel is judged by a strict gate.
+`verify::built_with_fast_math()` reports the model that file was actually
+compiled under — the answer exists only inside that translation unit — and a
+test asserts it is false everywhere, so removing the build rule fails the suite
+rather than quietly shifting a number.
+
 **Accuracy on degenerate and rank-deficient input.** Repeated singular values
 and hard zero blocks are the common case here, not the exception. Correctness on
 such matrices is the primary design target, which is why the kernel is Jacobi
