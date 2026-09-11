@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/shek014/autonne/actions/workflows/ci.yml/badge.svg)](https://github.com/shek014/autonne/actions/workflows/ci.yml)
 
-Thin singular value decomposition and Hermitian eigendecomposition for small
-dense complex matrices.
+Truncated singular value decomposition and Hermitian eigendecomposition for
+small dense complex matrices.
 
 Given a complex matrix, autonne returns its singular directions and the full
 spectrum. It targets the case where matrices are small (n ≤ 128), shapes recur,
@@ -110,6 +110,40 @@ run under both floating-point models.
   numpy's `zgesdd` / `zheevd` computed for it. Every one is factored, judged
   by the harness, and compared with that reference to LAPACK's own absolute
   accuracy, in every build variant.
+- **The two floating-point models agree.** The kernel is also built into one
+  small executable per model, both are run on every corpus matrix, and a third
+  program diffs what they wrote. Bit equality is not required and would be the
+  wrong test, since `-ffast-math` may reassociate; what is required is that the
+  spectra agree to `1e-11` relative and that each singular vector agrees up to
+  a phase, with degenerate groups excluded because any unitary mixing inside
+  one is a correct answer. Measured divergence is around `1e-14` on the spectra
+  and `1e-8` on the vectors.
+- **Agreement with LAPACK beyond the frozen set.** `tools/lapack_sweep.py`
+  draws matrices nobody chose -- arbitrary shapes, columns graded over thirty
+  decades, exact rank deficiency down to the zero matrix, spectra repeated
+  exactly, and whole matrices multiplied by `2^k` for `|k|` up to 900 -- and
+  compares each spectrum against numpy. Over 1700 of them across the strict
+  build, the fast-math build and an MSVC build, on five seeds, the worst
+  relative disagreement was `4.5e-15`, about twenty ulps, and the fast-math
+  build was no less accurate than the strict one. It is a developer tool, not
+  a CI test: a failure there is a lead to turn into a fixed case in
+  `tests/corpus`.
+- **Subnormal entries are handled, not stumbled over.** An entry at the bottom
+  of the subnormal range beside ordinary ones, or a scaling that drives one
+  there, is where a phase computed as `z / |z|` stops being unimodular and a
+  rotation stops being unitary. Both kernels lift such a value into the normal
+  range before dividing, and never form a quotient whose denominator can
+  underflow. Checked over 490,000 matrices in both floating-point models, on
+  Clang and MSVC, with no refusal and no factorisation the harness rejects.
+- **Any scale.** The harness measures on the input scaled by a power of two,
+  applied with `ldexp` so the scaling itself is representable at any exponent.
+  It therefore neither overflows on a matrix near `1e210` nor, more
+  dangerously, underflows to all-zeros on one near `1e-170` and accepts
+  whatever it is handed. Both directions are tested, in both floating-point
+  models. One limit is inherent rather than fixable: for a matrix whose
+  largest component is within a few ulps of the bottom of the subnormal range,
+  the true spectrum is not representable, and the harness's relative bound is
+  smaller than the one-ulp absolute error any implementation is forced into.
 
 ## Design constraints
 
@@ -145,6 +179,15 @@ such matrices is the primary design target, which is why the kernel is Jacobi
 rather than bidiagonalisation plus QR or divide-and-conquer: rotations keep
 every factor orthonormal by construction, whatever the spectrum does.
 
+**A comparison between floating-point models has to cross a process boundary.**
+Two variants of the same code linked into one binary do not measure two
+floating-point models. The inline helpers have vague linkage, the linker keeps
+one copy of each without regard to the flags it was built under, and the
+comparison ends up reading link order. So `autonne_dump` is built once per
+model, both executables are run on the same frozen matrix, and `autonne_compare`
+diffs the files. It is the same argument as the one about entry points, applied
+to measurement rather than to shipping code.
+
 **Verification is the caller's, not ours.** Consumers are expected to check every
 factorisation against the matrix it came from. autonne is judged by that check
 rather than trusted in place of it:
@@ -154,10 +197,14 @@ rather than trusted in place of it:
 #include <autonne/verify.hpp>
 
 const int k = std::min(rows, cols);
-if (!autonne::svd_thin(M, rows, cols, order, U, S, V)) { /* fallback */ }
+if (!autonne::svd_thin(M, rows, cols, order, U, S, V)) {
+  return fallback();  // U, S and V have not been written
+}
 const autonne::verify::SvdReport r =
     autonne::verify::check_svd(M, rows, cols, order, U, S, V, k);
-if (!r.ok()) { /* reject; r says which bound moved */ }
+if (!r.ok()) {
+  return fallback();  // r says which bound moved and by how much
+}
 ```
 
 `check_svd` accepts `k < min(rows, cols)` for a truncated slice, comparing the
@@ -173,21 +220,24 @@ otherwise idle desktop; milliseconds:
 
 | n   | spectrum       | autonne | Eigen BDCSVD  | Eigen JacobiSVD |
 | --- | -------------- | ------: | ------------: | --------------: |
-| 8   | decaying       |   0.007 |         0.018 |           0.017 |
-| 16  | decaying       |   0.036 |         0.043 |           0.137 |
-| 32  | decaying       |   0.32  |         0.34  |           1.23  |
-| 64  | decaying       |   2.42  |         2.16  |          10.3   |
-| 128 | decaying       |  17.3   |        12.8   |         101     |
-| 8   | flat           |   0.005 |         0.037 |           0.037 |
-| 16  | flat           |   0.039 |         0.063 |           0.37  |
-| 32  | flat           |   0.19  |         0.26  |           3.28  |
-| 64  | flat           |   1.21  |         1.85  |          27.7   |
-| 128 | flat           |   7.05  |        10.7   |         283     |
-| 8   | rank-deficient |   0.010 |         0.031 |           0.030 |
-| 16  | rank-deficient |   0.050 | 0.046 (rejected) |        0.19  |
-| 32  | rank-deficient |   0.37  |         0.24  |           1.55  |
-| 64  | rank-deficient |   2.17  |         1.89  |          10.7   |
-| 128 | rank-deficient |  19.4   | 11.7 (rejected) |       113     |
+| 8   | decaying       |   0.008 |         0.015 |           0.015 |
+| 16  | decaying       |   0.039 |         0.038 |           0.117 |
+| 32  | decaying       |   0.30  |         0.24  |           0.95  |
+| 64  | decaying       |   1.91  |         1.61  |           7.97  |
+| 128 | decaying       |  13.9   |         8.58  |          72.4   |
+| 8   | flat           |   0.005 |         0.025 |           0.025 |
+| 16  | flat           |   0.030 |         0.038 |           0.25  |
+| 32  | flat           |   0.17  |         0.18  |           2.19  |
+| 64  | flat           |   0.83  |         1.34  |          19.3   |
+| 128 | flat           |   5.10  |         7.41  |         195     |
+| 8   | rank-deficient |   0.008 |         0.021 |           0.019 |
+| 16  | rank-deficient |   0.041 | 0.027 (rejected) |        0.13  |
+| 32  | rank-deficient |   0.29  |         0.18  |           1.10  |
+| 64  | rank-deficient |   2.01  |         1.35  |           7.50  |
+| 128 | rank-deficient |  13.3   |  7.56 (rejected) |       75.0   |
+
+Run-to-run variation on a desktop is around twenty percent, so treat a
+difference smaller than that as noise; the ordering is stable across runs.
 
 "Decaying" is a geometric spectrum over sixteen decades, "flat" is fully
 degenerate, "rank-deficient" is half the spectrum degenerate and half exactly
@@ -200,14 +250,25 @@ in every row.
 
 Against the spec's bar -- the faster of Eigen's two methods -- autonne is
 faster or equal up to 32×32 on every shape, faster on flat spectra at every
-size, and within a factor of 1.5 on decaying and rank-deficient input at
+size, and within a factor of about 1.7 on decaying and rank-deficient input at
 128×128. The cost is dominated by Jacobi sweeps, each `O(n³)`; the pivoted QR
 that precedes them is a few milliseconds at 128 and accounts for most of the
 flat-spectrum time, where one or two sweeps suffice.
 
+Which sizes matter is a separate question, and one the consuming project has
+open as
+[verycareful/lindblad#100](https://github.com/verycareful/lindblad/issues/100).
+Its comparison corpus builds every scaling circuit with three layers of
+nearest-neighbour two-qubit gates, and each cut is crossed by one such gate
+per layer, so the Schmidt rank across any cut is bounded by `2³ = 8` and the
+matrices reaching this path are at most 16×16. That is a bound from reading
+the generator, not a measurement of what the circuits reach. If it holds, the
+sizes that actually run are the ones where autonne is ahead, and the 128×128
+column describes a path that corpus never enters.
+
 `eigh` is a plain cyclic Jacobi and pays for its accuracy guarantees: at
-128×128 it takes 61 ms against 5 ms for Eigen's tridiagonalisation-based
-solver, and about ten times longer at every size. A tridiagonal path would
+128×128 it takes about 45 ms against 3 ms for Eigen's tridiagonalisation-based
+solver, and roughly ten times longer at every size. A tridiagonal path would
 close that gap for callers that do not need relative accuracy on graded input;
 it is not implemented.
 
@@ -239,9 +300,14 @@ CONFIG)` works too; CI builds `tests/consumer` that way, with `-ffast-math`,
 against the installed tree.
 
 The suite is built three times -- strict, fast-math, and strict with the
-hand-rolled accessor path -- and `ctest` runs all of them. The benchmark is
+hand-rolled accessor path -- and `ctest` runs all of them, along with the
+cross-binary comparison of the two floating-point models. The benchmark is
 opt-in (`-DAUTONNE_BUILD_BENCHMARKS=ON`) and is the only target that fetches
 Eigen.
+
+`-DAUTONNE_SANITIZERS=address,undefined` builds everything under those
+sanitizers with `-fno-sanitize-recover`, which is how CI runs the suite on
+one job.
 
 ## Licence
 

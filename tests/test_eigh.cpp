@@ -295,6 +295,48 @@ TEST(Eigh, GradedPositiveDefiniteMatrixKeepsRelativeAccuracy) {
   EXPECT_TRUE(SpectrumWithinFactor(r.evals, d_sq, 0.9, 1.1, false));
 }
 
+// --- the awkward corners of the exponent range -----------------------------
+
+// Eigenvectors must stay unitary even when the scaling drives an off-diagonal
+// entry subnormal. Nothing in this input is subnormal or even unusual: one
+// large diagonal entry and one small off-diagonal pair. The kernel scales by
+// the largest component, which pushes the off-diagonal below the normal
+// range, and a rotation whose phase is computed from a subnormal value is not
+// unitary, so the accumulated eigenvector matrix stops being one.
+TEST(Eigh, KeepsEigenvectorsUnitaryWhenScalingDrivesEntriesSubnormal) {
+  const int n = 3;
+  struct Case {
+    int big;
+    int small;
+  };
+  for (const Case c : {Case{1020, -50}, Case{1000, -40}, Case{980, -60}}) {
+    std::vector<Complex> h(9, Complex(0.0, 0.0));
+    h[static_cast<std::size_t>(2 + 2 * n)] = Complex(std::ldexp(1.0, c.big), 0.0);
+    const double off = std::ldexp(1.0, c.small);
+    h[static_cast<std::size_t>(0 + 1 * n)] = Complex(off, 1.5 * off);
+    h[static_cast<std::size_t>(1 + 0 * n)] = Complex(off, -1.5 * off);
+
+    const EighResult r = run_eigh(h.data(), n, MatrixOrder::ColMajor);
+    ASSERT_TRUE(r.ok) << c.big << "/" << c.small;
+    EXPECT_TRUE(EighAccepted(check(h.data(), n, MatrixOrder::ColMajor, r)))
+        << c.big << "/" << c.small;
+  }
+}
+
+// The same defect reached directly, with literal subnormals in the input.
+TEST(Eigh, KeepsEigenvectorsUnitaryWithSubnormalOffDiagonal) {
+  const int n = 3;
+  const double t = std::ldexp(1.0, -1074);
+  std::vector<Complex> h(9, Complex(0.0, 0.0));
+  h[static_cast<std::size_t>(2 + 2 * n)] = Complex(1.0, 0.0);
+  h[static_cast<std::size_t>(0 + 1 * n)] = Complex(2.0 * t, 3.0 * t);
+  h[static_cast<std::size_t>(1 + 0 * n)] = Complex(2.0 * t, -3.0 * t);
+
+  const EighResult r = run_eigh(h.data(), n, MatrixOrder::ColMajor);
+  ASSERT_TRUE(r.ok);
+  EXPECT_TRUE(EighAccepted(check(h.data(), n, MatrixOrder::ColMajor, r)));
+}
+
 // --- size ------------------------------------------------------------------
 
 TEST(Eigh, DecomposesLargeRandomHermitian) {

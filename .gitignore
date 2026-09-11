@@ -44,6 +44,9 @@ build/
 Build/
 build-*/
 
+# Install prefix and consumer build tree used by the install-and-consume check
+prefix/
+
 # CMake generated files
 CMakeFiles/
 CMakeCache.txt

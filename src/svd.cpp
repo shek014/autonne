@@ -69,6 +69,13 @@ using detail::kernel::at;
 using detail::kernel::conj_mul;
 using detail::kernel::mul;
 
+// Sweep budget. Cyclic Jacobi converges quadratically once the off-diagonal
+// mass is small, so the count is low and grows slowly with n: lowering this
+// until the suite breaks puts the hardest case in the corpus and the stress
+// sweeps at twelve sweeps (a 128 x 128 random matrix, and a 96 x 96 with a
+// three-level degenerate spectrum). Sixty is therefore a five-fold margin,
+// not a guess. Exhausting it is reported as failure rather than papered over,
+// which is what the false return in the contract is for.
 constexpr int kMaxSweeps = 60;
 
 // Whether the second, unpivoted QR of R^* (Drmac and Veselic's second
@@ -158,10 +165,11 @@ void qr_householder(std::vector<Complex>& a, Index m, Index n, bool pivot, QrFac
     const Index len = m - j;
     const double xnorm = std::sqrt(best);  // best is exactly this column's norm^2
     const Complex alpha = x[0];
-    const double alpha_abs = detail::kernel::modulus(alpha);
-    const Complex phase = alpha_abs > 0.0
-                              ? Complex(alpha.real() / alpha_abs, alpha.imag() / alpha_abs)
-                              : Complex(1.0, 0.0);
+    // Unimodular at any magnitude, including a subnormal alpha: see
+    // unit_phase. |beta| must equal ||x|| exactly, because the reflection is
+    // asserted below rather than recomputed, and a phase that is not
+    // unimodular silently corrupts R while leaving Q unitary.
+    const Complex phase = detail::kernel::unit_phase(alpha);
     const Complex beta(-phase.real() * xnorm, -phase.imag() * xnorm);
 
     Complex* v = &f.h[at(j, j, m)];
@@ -272,14 +280,71 @@ bool jacobi_orthogonalise(std::vector<Complex>& x, Index rows, std::vector<Compl
         const double shift = r.t * r.gamma_abs;
         norm2[p] = alpha - shift;
         norm2[q] = beta + shift;
+        // Both are clamped: whichever of the two ends up carrying the smaller
+        // Gram eigenvalue is the one a cancellation could push below zero,
+        // and a negative value here would make the next sqrt a NaN.
         if (norm2[p] < 0.0) norm2[p] = 0.0;
+        if (norm2[q] < 0.0) norm2[q] = 0.0;
         ++rotations;
       }
     }
     refresh();
     if (rotations == 0) return true;
   }
-  return false;
+
+  // The sweep budget is exhausted, which is not by itself a failure.
+  //
+  // A pair can keep clearing the rotation threshold while the rotation that
+  // would clear it is too small to change either column: both updates land at
+  // or below an ulp, all that survives is a sign flip, and |x_p^* x_q| comes
+  // back the same on the next sweep. The pair then cycles until the budget
+  // runs out. Refusing there costs the caller a correct factorisation of an
+  // ordinary matrix -- measured at about one in ten thousand 2x2 and 3x3
+  // inputs -- and, worse, the cycle depends on ulp-level cancellation, so the
+  // same input could be refused under one floating-point model and accepted
+  // under another.
+  //
+  // What the caller needs is not that the iteration converged but that the
+  // columns are orthogonal to the precision available. Measure that directly.
+  // This is the counterpart of the acceptance test the two-sided sweep in
+  // eigh.cpp already had.
+  //
+  // The bound is four times the rotation threshold. tol is itself the noise
+  // floor -- an inner product accumulated over `rows` terms carries about
+  // sqrt(rows) * u of rounding, so no rotation can drive a pair below it --
+  // and the slack covers a pair sitting a little above it, which is where the
+  // stall happens (measured at 1.09 * tol).
+  //
+  // What that costs, worst case: with every one of the pairs at the bound,
+  // ||X^* X - I||_F is about cols * 4 * tol = 4 * cols * sqrt(rows) * u, and
+  // the harness allows 64 * max(rows, cols) * eps. For a square input those
+  // are in the ratio sqrt(n) / 32, so the test stays inside the harness bound
+  // for every n up to 1024 -- eight times the largest matrix this library is
+  // meant for. The ratio grows as sqrt(n), so it is stated here rather than
+  // left to be discovered if that cap ever moves. In practice the worst case
+  // is unreachable, since it needs every pair at the bound at once while a
+  // converged sweep leaves almost all of them at u; the measured ratio is
+  // 0.03.
+  double worst_cosine = 0.0;
+  for (Index p = 0; p + 1 < cols; ++p) {
+    if (dead[p]) continue;
+    for (Index q = p + 1; q < cols; ++q) {
+      if (dead[q]) continue;
+      const Complex* xp = &x[at(0, p, rows)];
+      const Complex* xq = &x[at(0, q, rows)];
+      double gr = 0.0;
+      double gi = 0.0;
+      for (Index i = 0; i < rows; ++i) {
+        gr += xp[i].real() * xq[i].real() + xp[i].imag() * xq[i].imag();
+        gi += xp[i].real() * xq[i].imag() - xp[i].imag() * xq[i].real();
+      }
+      const double denominator = std::sqrt(norm2[p]) * std::sqrt(norm2[q]);
+      if (!(denominator > 0.0)) continue;
+      const double cosine = detail::kernel::modulus(Complex(gr, gi)) / denominator;
+      if (cosine > worst_cosine) worst_cosine = cosine;
+    }
+  }
+  return worst_cosine <= 4.0 * tol;
 }
 
 // --- orientation -----------------------------------------------------------

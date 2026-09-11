@@ -351,6 +351,88 @@ TEST(VerifySvd, SquaredBoundWouldRejectAValidTruncatedFactorisation) {
       << (r.backward_bound - std::sqrt(r.discarded_energy));
 }
 
+// --- scale ----------------------------------------------------------------
+//
+// The harness measures on the input scaled by a power of two, and these two
+// tests are why. Without that scaling the sum of squares of a matrix near
+// 1e210 overflows to infinity, and the sum of squares of one near 1e-170
+// underflows to zero. The first rejects a correct factorisation, which is
+// merely useless. The second makes every measured quantity exactly zero, so
+// the residual sits at zero, the bound sits at zero, and the check accepts
+// whatever it is handed -- including a factorisation with nothing to do with
+// the matrix. That is the failure a verification harness cannot have.
+
+TEST(VerifySvd, AcceptsACorrectFactorisationOfAHugeMatrix) {
+  for (const int exponent : {700, 900, 1000}) {
+    const double factor = std::ldexp(1.0, exponent);
+    SvdCase c = make_svd_case(5, 4, {8.0, 4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 3001);
+    for (Complex& z : c.m) z *= factor;
+    for (double& x : c.s) x *= factor;
+    const SvdReport r = check(c);
+    EXPECT_TRUE(ReportAccepted(r)) << "2^" << exponent;
+  }
+}
+
+TEST(VerifySvd, RejectsAWrongFactorisationOfATinyMatrix) {
+  for (const int exponent : {-700, -900, -1000}) {
+    const double factor = std::ldexp(1.0, exponent);
+    SvdCase c = make_svd_case(5, 4, {8.0, 4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 3002);
+    for (Complex& z : c.m) z *= factor;
+    for (double& x : c.s) x *= factor;
+    ASSERT_TRUE(check(c).ok()) << "2^" << exponent;
+
+    // Wrong by a factor of two on the leading value: the reconstruction is
+    // nowhere near the matrix, at any scale.
+    SvdCase wrong = c;
+    wrong.s[0] *= 2.0;
+    const SvdReport r = check(wrong);
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+    EXPECT_FALSE(r.ok()) << "2^" << exponent;
+
+    // And a factorisation of an entirely different matrix.
+    SvdCase other = make_svd_case(5, 4, {1.0, 1.0, 1.0, 1.0}, MatrixOrder::ColMajor, 3003);
+    for (double& x : other.s) x *= factor;
+    const SvdReport r2 = check_svd(c.m.data(), c.rows, c.cols, c.order, other.u.data(),
+                                   other.s.data(), other.v.data(), c.k);
+    EXPECT_FALSE(r2.ok()) << "2^" << exponent;
+  }
+}
+
+// The scaling the harness applies must itself be representable. Forming it as
+// a single factor 2^-e fails once e exceeds 1023: the factor overflows to
+// infinity, every product becomes a NaN, and under -ffast-math the NaN guard
+// on a freshly computed value is folded away, so the wrong factorisation is
+// accepted. Both halves are tested here.
+TEST(VerifySvd, MeasuresMatricesBelowTheNormalRange) {
+  for (const int exponent : {-1024, -1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> m = {Complex(tiny, 0.0)};
+    const std::vector<Complex> u = {Complex(1.0, 0.0)};
+    const std::vector<double> sv = {tiny};
+    const std::vector<Complex> v = {Complex(1.0, 0.0)};
+    const SvdReport r = check_svd(m.data(), 1, 1, MatrixOrder::ColMajor, u.data(),
+                                  sv.data(), v.data(), 1);
+    EXPECT_TRUE(ReportAccepted(r)) << "2^" << exponent;
+  }
+}
+
+TEST(VerifySvd, RejectsAWrongFactorisationBelowTheNormalRange) {
+  for (const int exponent : {-1025, -1030, -1060}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> m = {Complex(tiny, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(tiny, 0.0)};
+    const std::vector<Complex> u = {Complex(1.0, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(1.0, 0.0)};
+    const std::vector<double> sv = {3.0 * tiny, 0.25 * tiny};
+    const std::vector<Complex> v = u;
+    const SvdReport r = check_svd(m.data(), 2, 2, MatrixOrder::ColMajor, u.data(),
+                                  sv.data(), v.data(), 2);
+    EXPECT_FALSE(r.ok()) << "2^" << exponent
+                         << ": a spectrum three times too large was accepted";
+    EXPECT_FALSE(r.backward_ok) << "2^" << exponent;
+  }
+}
+
 // --- input validation -----------------------------------------------------
 
 TEST(VerifySvd, RejectsMalformedArguments) {

@@ -418,6 +418,127 @@ TEST(Svd, TailIsReportedAccuratelyEnoughToSum) {
   EXPECT_NEAR(tail, expected, 1e-8 * expected);
 }
 
+// --- the awkward corners of the exponent range -----------------------------
+
+// A subnormal entry beside ordinary ones.
+//
+// The kernel scales its input so the largest component lands in [0.5, 1), but
+// that says nothing about the smallest: an entry near the bottom of the
+// subnormal range stays there. The Householder step forms the phase of the
+// leading entry of each column, and a phase computed from a subnormal value
+// by dividing through its modulus is not unimodular -- the modulus itself is
+// rounded onto the subnormal grid. The reflection is then asserted rather
+// than computed, so R is wrong while Q stays unitary, and the factorisation
+// comes back with a large backward error.
+TEST(Svd, FactorsMatricesCarryingASubnormalEntry) {
+  const double t = std::ldexp(1.0, -1074);  // the smallest positive double
+  std::vector<Complex> m = {
+      Complex(8.0 * t, 5.0 * t),
+      Complex(0.9346819330656273, -0.52682436833153679),
+      Complex(-0.099011449652049763, 0.14929178335087376),
+      Complex(8.0 * t, 2.0 * t),
+  };
+  const SvdResult r = run_svd(m.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(r.ok);
+  EXPECT_TRUE(SvdAccepted(check(m.data(), 2, 2, MatrixOrder::ColMajor, r)));
+
+  // The same thing in a larger shape, with one subnormal among ordinary
+  // entries rather than two.
+  std::vector<Complex> big = random_matrix(3, 4, 8181);
+  big[2] = Complex(8.0 * t, 8.0 * t);
+  const SvdResult rb = run_svd(big.data(), 3, 4, MatrixOrder::ColMajor);
+  ASSERT_TRUE(rb.ok);
+  EXPECT_TRUE(SvdAccepted(check(big.data(), 3, 4, MatrixOrder::ColMajor, rb)));
+}
+
+// A pair of columns whose inner product sits just above the rotation
+// threshold while the rotation that would fix it underflows: cos comes out
+// exactly 1 and the update degenerates to a phase multiply, which flips the
+// sign of one column without changing the magnitude of the inner product. The
+// pair then cycles forever and the sweep budget runs out, so the kernel
+// refuses an ordinary well-conditioned matrix. This 2x2 is one such case.
+TEST(Svd, DoesNotStallOnAPairThatCannotBeImproved) {
+  const std::vector<Complex> m = {
+      Complex(-0.29125996458617709, -0.27330429881289592),
+      Complex(0.030033115161182761, 0.19209323043486018),
+      Complex(-0.17752614758532445, 0.080546835854100676),
+      Complex(0.21093110527014736, -0.14286197298506795),
+  };
+  const SvdResult r = run_svd(m.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(r.ok) << "the kernel refused an ordinary 2x2";
+  EXPECT_TRUE(SvdAccepted(check(m.data(), 2, 2, MatrixOrder::ColMajor, r)));
+}
+
+// The same property over a wide sweep: an ordinary random matrix must not be
+// refused. The rate of the stall above is around one in ten thousand at these
+// sizes, so a few thousand cases is enough to catch a regression.
+TEST(Svd, AcceptsEveryOrdinaryRandomMatrix) {
+  int refused = 0;
+  for (int trial = 0; trial < 20000; ++trial) {
+    const int n = 2 + (trial % 5);
+    const std::vector<Complex> m =
+        random_matrix(n, n, static_cast<std::uint64_t>(trial) + 500000u);
+    const SvdResult r = run_svd(m.data(), n, n, MatrixOrder::ColMajor);
+    if (!r.ok) {
+      ++refused;
+      if (refused <= 3) ADD_FAILURE() << "refused trial " << trial << " at " << n << "x" << n;
+    }
+  }
+  EXPECT_EQ(refused, 0);
+}
+
+// A singular value far below the old column floor but comfortably
+// representable. The floor exists because the column norm is formed by
+// summing squares, which underflows below about 1e-154; a value at 1e-121 is
+// nowhere near that, and discarding it contradicts the relative-accuracy
+// claim on the most sharply scaled matrix there is.
+TEST(Svd, KeepsSingularValuesFarBelowOne) {
+  for (const int exponent : {-395, -400, -450, -490}) {
+    const double tiny = std::ldexp(1.0, exponent);
+    const std::vector<Complex> m = {Complex(1.0, 0.0), Complex(0.0, 0.0),
+                                    Complex(0.0, 0.0), Complex(tiny, 0.0)};
+    const SvdResult r = run_svd(m.data(), 2, 2, MatrixOrder::ColMajor);
+    ASSERT_TRUE(r.ok) << exponent;
+    EXPECT_TRUE(SvdAccepted(check(m.data(), 2, 2, MatrixOrder::ColMajor, r))) << exponent;
+    EXPECT_EQ(r.s[0], 1.0) << exponent;
+    EXPECT_NEAR(r.s[1], tiny, 1e-12 * tiny) << exponent;
+  }
+}
+
+// A row or column made entirely of subnormal entries is not structurally
+// zero, and must not be treated as one differently by different builds. The
+// concern is a denormals-are-zero rounding mode, which MSVC's /fp:fast
+// selects: the structural-zero test compares entries against 0.0, and if
+// subnormal operands read as zero there the kernel would silently take a
+// different path. Measured identical across MSVC /fp:strict, MSVC /fp:fast
+// and Clang -ffast-math, so this pins it rather than reporting it.
+TEST(Svd, TreatsSubnormalRowsAndColumnsConsistently) {
+  const double t = std::ldexp(1.0, -1074);
+
+  std::vector<Complex> subnormal_row = {Complex(3 * t, 0.0), Complex(0.5, 0.25),
+                                        Complex(5 * t, 0.0), Complex(-0.25, 0.5)};
+  const SvdResult rr = run_svd(subnormal_row.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(rr.ok);
+  EXPECT_TRUE(SvdAccepted(check(subnormal_row.data(), 2, 2, MatrixOrder::ColMajor, rr)));
+
+  std::vector<Complex> subnormal_col = {Complex(0.5, 0.25), Complex(-0.25, 0.5),
+                                        Complex(3 * t, 0.0), Complex(5 * t, 0.0)};
+  const SvdResult rc = run_svd(subnormal_col.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(rc.ok);
+  EXPECT_TRUE(SvdAccepted(check(subnormal_col.data(), 2, 2, MatrixOrder::ColMajor, rc)));
+
+  // A matrix that is entirely subnormal is scaled back into the normal range
+  // like any other, so its spectrum comes out at the right magnitude rather
+  // than collapsing to zero.
+  std::vector<Complex> all_subnormal = {Complex(3 * t, 0.0), Complex(0.0, 0.0),
+                                        Complex(0.0, 0.0), Complex(5 * t, 0.0)};
+  const SvdResult ra = run_svd(all_subnormal.data(), 2, 2, MatrixOrder::ColMajor);
+  ASSERT_TRUE(ra.ok);
+  EXPECT_TRUE(SvdAccepted(check(all_subnormal.data(), 2, 2, MatrixOrder::ColMajor, ra)));
+  EXPECT_EQ(ra.s[0], 5.0 * t);
+  EXPECT_EQ(ra.s[1], 3.0 * t);
+}
+
 // --- size ------------------------------------------------------------------
 
 TEST(Svd, FactorsLargeRandomShapes) {

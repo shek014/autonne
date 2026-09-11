@@ -1,0 +1,18 @@
+# Line endings are pinned rather than left to each contributor's
+# core.autocrlf setting.
+#
+# tests/corpus holds a frozen corpus whose whole point is that it is exact:
+# the matrices are hex-float literals that must round-trip bit for bit, and
+# the reference spectra beside them were computed once by LAPACK. A file whose
+# bytes depend on the platform it was checked out on is not frozen. Pinning
+# also keeps tools/check_symbols.sh runnable, since a shell script checked out
+# with CRLF fails on every line.
+#
+# The rule is repository-wide so that regenerating the corpus with
+# tools/make_corpus.py reproduces the committed bytes on any platform.
+* text=auto eol=lf
+
+# Hex-float corpus files: text, but never touched by any filter.
+tests/corpus/*.txt text eol=lf
+
+tools/*.sh text eol=lf
