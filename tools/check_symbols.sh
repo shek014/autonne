@@ -49,7 +49,11 @@ for bin in "$@"; do
     status=1
     continue
   fi
-  symbols="$("$nm_tool" -C --defined-only "$bin" 2>/dev/null || true)"
+  # GNU and LLVM nm demangle with -C and filter with --defined-only; Apple's
+  # nm spells the filter -U and may lack -C, so fall back to c++filt.
+  if ! symbols="$("$nm_tool" -C --defined-only "$bin" 2>/dev/null)"; then
+    symbols="$("$nm_tool" -U "$bin" 2>/dev/null | c++filt || true)"
+  fi
 
   # Itanium demangling prints "autonne::svd_thin(...)"; Microsoft demangling
   # prints "bool __cdecl autonne::svd_thin(...)". Match on the qualified name

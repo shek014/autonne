@@ -90,16 +90,26 @@ bool jacobi_diagonalise(std::vector<Complex>& h, std::vector<double>& d, Index n
         const Rotation r = detail::kernel::make_rotation(d[p], d[q_], g);
 
         // Columns p and q of every row other than p and q, then mirror.
+        const double c = r.c;
+        const double s_ = r.s;
+        const double pr = r.phase.real();
+        const double pi = r.phase.imag();
         for (Index k = 0; k < n; ++k) {
           if (k == p || k == q_) continue;
-          const Complex a = h[at(k, p, n)];
-          const Complex b = r.phase * h[at(k, q_, n)];
-          const Complex np = r.c * a - r.s * b;
-          const Complex nq = r.s * a + r.c * b;
-          h[at(k, p, n)] = np;
-          h[at(k, q_, n)] = nq;
-          h[at(p, k, n)] = std::conj(np);
-          h[at(q_, k, n)] = std::conj(nq);
+          const double ar = h[at(k, p, n)].real();
+          const double ai = h[at(k, p, n)].imag();
+          const double qr = h[at(k, q_, n)].real();
+          const double qi = h[at(k, q_, n)].imag();
+          const double br = pr * qr - pi * qi;
+          const double bi = pr * qi + pi * qr;
+          const double npr = c * ar - s_ * br;
+          const double npi = c * ai - s_ * bi;
+          const double nqr = s_ * ar + c * br;
+          const double nqi = s_ * ai + c * bi;
+          h[at(k, p, n)] = Complex(npr, npi);
+          h[at(k, q_, n)] = Complex(nqr, nqi);
+          h[at(p, k, n)] = Complex(npr, -npi);
+          h[at(q_, k, n)] = Complex(nqr, -nqi);
         }
         d[p] -= r.t * r.gamma_abs;
         d[q_] += r.t * r.gamma_abs;
@@ -183,13 +193,13 @@ bool eigh_impl(const Complex* data, Index n, MatrixOrder order, double* evals_ou
     }
     if (!jacobi_diagonalise(h, d, nc, evecs_out != nullptr ? &q : nullptr)) return false;
 
-    std::vector<Index> order;
-    detail::kernel::sort_indices(d.data(), nc, false, order);
+    std::vector<Index> ascending;
+    detail::kernel::sort_indices(d.data(), nc, false, ascending);
     core_evals.resize(nc);
-    for (Index j = 0; j < nc; ++j) core_evals[j] = std::ldexp(d[order[j]], exponent);
+    for (Index j = 0; j < nc; ++j) core_evals[j] = std::ldexp(d[ascending[j]], exponent);
     if (evecs_out != nullptr) {
       core_evecs.resize(nc * nc);
-      detail::kernel::permute_columns(q.data(), core_evecs.data(), nc, order);
+      detail::kernel::permute_columns(q.data(), core_evecs.data(), nc, ascending);
     }
   }
 

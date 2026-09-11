@@ -58,6 +58,27 @@ static inline constexpr Index at(Index i, Index j, Index ld) noexcept {
   return i + j * ld;
 }
 
+// Complex products written out on the parts. std::complex's operator* is
+// specified with the C99 Annex G recovery for infinite operands, and under
+// strict floating point GCC and Clang implement it as a call to __muldc3 on
+// every multiplication -- an order of magnitude slower than four
+// multiplications and two additions, and pointless here, where every operand
+// is finite by construction.
+static inline Complex mul(const Complex& a, const Complex& b) noexcept {
+  return Complex(a.real() * b.real() - a.imag() * b.imag(),
+                 a.real() * b.imag() + a.imag() * b.real());
+}
+
+// conj(a) * b.
+static inline Complex conj_mul(const Complex& a, const Complex& b) noexcept {
+  return Complex(a.real() * b.real() + a.imag() * b.imag(),
+                 a.real() * b.imag() - a.imag() * b.real());
+}
+
+static inline Complex scale(double c, const Complex& z) noexcept {
+  return Complex(c * z.real(), c * z.imag());
+}
+
 // Unit roundoff, 2^-53. The Jacobi convergence thresholds are multiples of
 // this rather than of epsilon (2^-52), following LAPACK's xGESVJ.
 static inline constexpr double unit_roundoff() noexcept {
@@ -179,11 +200,19 @@ static inline Rotation make_rotation(double alpha, double beta,
 // Applies the rotation to columns p and q (length n, contiguous).
 static inline void rotate_columns(Complex* xp, Complex* xq, Index n,
                                   const Rotation& r) noexcept {
+  const double c = r.c;
+  const double s_ = r.s;
+  const double pr = r.phase.real();
+  const double pi = r.phase.imag();
   for (Index i = 0; i < n; ++i) {
-    const Complex a = xp[i];
-    const Complex b = r.phase * xq[i];
-    xp[i] = r.c * a - r.s * b;
-    xq[i] = r.s * a + r.c * b;
+    const double ar = xp[i].real();
+    const double ai = xp[i].imag();
+    const double qr = xq[i].real();
+    const double qi = xq[i].imag();
+    const double br = pr * qr - pi * qi;
+    const double bi = pr * qi + pi * qr;
+    xp[i] = Complex(c * ar - s_ * br, c * ai - s_ * bi);
+    xq[i] = Complex(s_ * ar + c * br, s_ * ai + c * bi);
   }
 }
 
@@ -217,8 +246,8 @@ static inline void complete_orthonormal(Complex* x, Index n, Index have,
     for (int pass = 0; pass < 2; ++pass) {
       for (Index c = 0; c < col; ++c) {
         Complex dot(0.0, 0.0);
-        for (Index i = 0; i < n; ++i) dot += std::conj(x[at(i, c, n)]) * work[i];
-        for (Index i = 0; i < n; ++i) work[i] -= dot * x[at(i, c, n)];
+        for (Index i = 0; i < n; ++i) dot += conj_mul(x[at(i, c, n)], work[i]);
+        for (Index i = 0; i < n; ++i) work[i] -= mul(dot, x[at(i, c, n)]);
       }
     }
     const double inv = 1.0 / std::sqrt(norm_sq(work.data(), n));

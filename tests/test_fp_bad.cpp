@@ -138,7 +138,14 @@ TEST(FpBad, DetectsNanFromArithmetic) {
 TEST(FpBad, StdPredicateBehaviourIsRecorded) {
   const Slot nan_slot(kQuietNanBits);
   const double& nan_value = nan_slot.get();
-  #if defined(__clang__)
+  // The warning group is recent; AppleClang does not have it, and naming an
+  // unknown group is itself an error under -Werror.
+  #if defined(__clang__) && defined(__has_warning)
+  #  if __has_warning("-Wnan-infinity-disabled")
+  #    define AUTONNE_SUPPRESS_NAN_USE 1
+  #  endif
+  #endif
+  #if defined(AUTONNE_SUPPRESS_NAN_USE)
   #  pragma clang diagnostic push
   #  pragma clang diagnostic ignored "-Wnan-infinity-disabled"
   #endif
@@ -147,8 +154,9 @@ TEST(FpBad, StdPredicateBehaviourIsRecorded) {
     // NaN here is UB under -ffast-math — that is precisely what is being
     // measured, and the same diagnostic Eigen's deleted guard produces.
     RecordProperty("std_isnan_on_nan", std::isnan(nan_value) ? 1 : 0);
-  #if defined(__clang__)
+  #if defined(AUTONNE_SUPPRESS_NAN_USE)
   #  pragma clang diagnostic pop
+  #  undef AUTONNE_SUPPRESS_NAN_USE
   #endif
   RecordProperty("fp_bad_on_nan", fp_bad(nan_value) ? 1 : 0);
   EXPECT_TRUE(fp_bad(nan_value));

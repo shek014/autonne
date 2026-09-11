@@ -86,12 +86,17 @@ inline void poke_bits(double& target, std::uint64_t bits) noexcept {
   std::memcpy(&target, &bits, sizeof bits);
 }
 
+// [complex.numbers] guarantees that a complex<double> lvalue may be viewed as
+// a double[2], with element 0 the real part. Writing through that view rather
+// than memcpy-ing over the object avoids -Wclass-memaccess, which GCC raises
+// for a memcpy into any non-trivial class type, std::complex included.
 inline void poke_bits(Complex& target, std::uint64_t re_bits,
                       std::uint64_t im_bits) noexcept {
-  const std::uint64_t words[2] = {re_bits, im_bits};
-  static_assert(sizeof(Complex) == sizeof words,
+  static_assert(sizeof(Complex) == 2 * sizeof(double),
                 "std::complex<double> must be two adjacent binary64 values");
-  std::memcpy(&target, words, sizeof words);
+  double(&parts)[2] = reinterpret_cast<double(&)[2]>(target);
+  poke_bits(parts[0], re_bits);
+  poke_bits(parts[1], im_bits);
 }
 
 // Bit pattern of a finite double, for mixing finite and non-finite parts in
