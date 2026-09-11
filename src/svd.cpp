@@ -374,7 +374,15 @@ bool prefers_transpose(const std::vector<Complex>& b, Index m, Index n) {
       if (mag > col_max[j]) col_max[j] = mag;
     }
   }
-  auto spread = [](const std::vector<double>& v, bool& has_zero) {
+  // The spread is returned as its base-2 logarithm, never as hi / lo. That
+  // quotient overflows to infinity once the gap passes about 2^1024, which a
+  // live row whose largest component is subnormal reaches beside an ordinary
+  // one -- and the whole fast-math argument for this file rests on no
+  // infinity ever being formed. Splitting each value into mantissa and
+  // exponent keeps the difference exact in the exponent and bounded in the
+  // mantissa: frexp puts both mantissas in [0.5, 1), so their ratio lies in
+  // (0.5, 2) and its logarithm in (-1, 1).
+  auto spread_log2 = [](const std::vector<double>& v, bool& has_zero) {
     double lo = v[0];
     double hi = v[0];
     for (const double x : v) {
@@ -382,12 +390,17 @@ bool prefers_transpose(const std::vector<Complex>& b, Index m, Index n) {
       if (x > hi) hi = x;
     }
     has_zero = (lo == 0.0);
-    return has_zero ? 0.0 : hi / lo;
+    if (has_zero) return 0.0;
+    int e_hi = 0;
+    int e_lo = 0;
+    const double m_hi = std::frexp(hi, &e_hi);
+    const double m_lo = std::frexp(lo, &e_lo);
+    return static_cast<double>(e_hi - e_lo) + std::log2(m_hi / m_lo);
   };
   bool rows_have_zero = false;
   bool cols_have_zero = false;
-  const double row_spread = spread(row_max, rows_have_zero);
-  const double col_spread = spread(col_max, cols_have_zero);
+  const double row_spread = spread_log2(row_max, rows_have_zero);
+  const double col_spread = spread_log2(col_max, cols_have_zero);
   if (cols_have_zero) return false;
   if (rows_have_zero) return true;
   return row_spread > col_spread;
