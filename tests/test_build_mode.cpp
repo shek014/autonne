@@ -22,6 +22,7 @@
 #include <gtest/gtest.h>
 
 #include "autonne/detail/matrix_view.hpp"
+#include "autonne/verify.hpp"
 
 #ifndef AUTONNE_TEST_FAST_MATH
 #error "AUTONNE_TEST_FAST_MATH must be defined by the build for each variant"
@@ -78,6 +79,20 @@ TEST(BuildMode, HandRolledAccessorVariantBypassesStdMdspan) {
 #else
   GTEST_SKIP() << "this variant does not request the hand-rolled accessor";
 #endif
+}
+
+
+// The harness is compiled strict in every variant, including the fast-math one.
+// A fast-math kernel judged by a fast-math harness is a weaker test than a
+// fast-math kernel judged by a strict one: if the judge's own reductions are
+// reassociated, its verdict moves with flags that say nothing about the
+// factorisation. The build pins src/verify.cpp with a per-source option, and
+// this is what notices if that line is ever removed -- nothing else would,
+// because every test would still pass, just against a different number.
+TEST(BuildMode, HarnessIsCompiledStrictInEveryVariant) {
+  EXPECT_FALSE(autonne::verify::built_with_fast_math())
+      << "src/verify.cpp was built with -ffast-math; the acceptance gate's own "
+         "arithmetic is then subject to reassociation";
 }
 
 }  // namespace

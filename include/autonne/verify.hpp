@@ -48,6 +48,18 @@ namespace verify {
 // not a value a fast-math build can be trusted to keep non-finite.
 using autonne::detail::fp_bad;
 
+// True if src/verify.cpp was itself compiled with -ffast-math.
+//
+// The harness is the acceptance gate, and nothing judges the judge: if its own
+// residual and norm reductions are reassociated, a verdict moves with flags
+// that have nothing to do with the factorisation under test. The build pins
+// this file strict in every target, but a build file can be edited and the
+// damage would be silent -- every test would still pass, just against a
+// slightly different number. Reading the macro inside the translation unit
+// that matters is the only way to check, which is why this is a function and
+// not a constant.
+bool built_with_fast_math() noexcept;
+
 // ---------------------------------------------------------------------------
 // Tolerances
 // ---------------------------------------------------------------------------

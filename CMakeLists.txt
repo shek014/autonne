@@ -209,6 +209,12 @@ if(AUTONNE_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(${target} PRIVATE GTest::gtest_main autonne_warnings)
     target_compile_options(${target} PRIVATE ${ARG_FLAGS})
+    # The harness is the acceptance gate, and nothing judges the judge. Its
+    # arithmetic is pinned strict in every variant, so a verdict cannot move
+    # with the flags the rest of the binary was built under.
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/verify.cpp
+      TARGET_DIRECTORY ${target}
+      PROPERTIES COMPILE_OPTIONS "${AUTONNE_STRICT_FP_FLAGS}")
     target_compile_definitions(${target} PRIVATE ${ARG_DEFINES}
       AUTONNE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus")
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
