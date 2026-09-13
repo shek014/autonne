@@ -33,7 +33,11 @@ FetchContent_MakeAvailable(eigen)
 
 add_executable(autonne_bench bench.cpp)
 target_link_libraries(autonne_bench PRIVATE autonne::autonne)
-target_include_directories(autonne_bench PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+# tests/ for the fixtures; src/ so the leaf sweep can time the private
+# divide-and-conquer core on its own, ahead of the entry point built on it.
+target_include_directories(autonne_bench PRIVATE
+  ${CMAKE_SOURCE_DIR}/tests
+  ${CMAKE_SOURCE_DIR}/src)
 # Eigen's headers are not ours to warn about.
 target_include_directories(autonne_bench SYSTEM PRIVATE ${eigen_SOURCE_DIR})
 target_compile_options(autonne_bench PRIVATE ${AUTONNE_WARNING_FLAGS} ${AUTONNE_STRICT_FP_FLAGS})

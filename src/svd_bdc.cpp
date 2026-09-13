@@ -86,9 +86,14 @@ using detail::svd_common::apply_q;
 using detail::svd_common::qr_householder;
 
 // Largest bidiagonal block solved densely (pivoted QR and one-sided Jacobi
-// on its expansion) rather than split. Eigen's divide-and-conquer switches
-// at sixteen; the benchmark sweeps this value.
-constexpr Index kLeafSize = 16;
+// on its expansion) rather than split. Measured by the benchmark's leaf
+// sweep on the divide-and-conquer core alone (random bidiagonal, Clang 22,
+// strict floating point, median ms): at n = 128, leaves of 4, 8 and 12 all
+// take 0.99, 16 takes 1.08, 32 takes 1.39 and 64 takes 2.53; the ordering
+// is the same at 32, 64 and 256. A merge is cheaper than a dense solve of
+// the same order from 16 up, and below that the choice does not register.
+// Eight sits in the middle of the flat region, two sizes clear of the step.
+constexpr Index kLeafSize = 8;
 
 // Rows-to-columns ratio from which a QR factorisation precedes the
 // bidiagonalisation (step 4). Bidiagonalising the block directly costs
