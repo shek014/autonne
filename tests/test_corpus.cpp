@@ -53,6 +53,7 @@ using autonne_test::SvdAccepted;
 using autonne_test::SvdResult;
 using autonne_test::run_eigh;
 using autonne_test::run_svd;
+using autonne_test::run_svd_bdc;
 
 constexpr double kEps = std::numeric_limits<double>::epsilon();
 
@@ -82,7 +83,22 @@ double largest(const std::vector<double>& v) {
   return m;
 }
 
+// The matrix alone, for the corpus files that carry no reference vector.
+autonne::hexfloat::Matrix load_matrix(const std::string& relative) {
+  const std::string path = std::string(AUTONNE_CORPUS_DIR) + "/" + relative + ".txt";
+  std::ifstream in(path);
+  autonne::hexfloat::Matrix m;
+  if (!in) {
+    ADD_FAILURE() << "cannot open " << path;
+    return m;
+  }
+  if (!autonne::hexfloat::read_matrix(in, m)) ADD_FAILURE() << "bad matrix in " << path;
+  return m;
+}
+
 class SvdCorpus : public ::testing::TestWithParam<const char*> {};
+class SvdBdcCorpus : public ::testing::TestWithParam<const char*> {};
+class MpsBlocks : public ::testing::TestWithParam<const char*> {};
 class EighCorpus : public ::testing::TestWithParam<const char*> {};
 
 TEST_P(SvdCorpus, AgreesWithLapackAndPassesHarness) {
@@ -98,6 +114,50 @@ TEST_P(SvdCorpus, AgreesWithLapackAndPassesHarness) {
   ASSERT_EQ(rec.reference.data.size(), static_cast<std::size_t>(k));
   const double tol = 32.0 * static_cast<double>(rows > cols ? rows : cols) * kEps * largest(rec.reference.data);
   EXPECT_TRUE(SpectrumClose(r.s, rec.reference.data, tol, true));
+}
+
+// The same files through the divide-and-conquer kernel, to the same
+// absolute tolerance: on the graded files (column_scaled, row_scaled) that
+// tolerance is all this kernel promises, and the LAPACK reference is what
+// the absolute error is measured against.
+TEST_P(SvdBdcCorpus, AgreesWithLapackAndPassesHarness) {
+  const Record rec = load(GetParam());
+  if (rec.m.rows == 0) return;
+  const int rows = rec.m.rows;
+  const int cols = rec.m.cols;
+  const SvdResult r = run_svd_bdc(rec.m.data.data(), rows, cols, rec.m.order);
+  ASSERT_TRUE(r.ok);
+  const int k = rows < cols ? rows : cols;
+  EXPECT_TRUE(SvdAccepted(autonne::verify::check_svd(rec.m.data.data(), rows, cols, rec.m.order,
+                                                     r.u.data(), r.s.data(), r.v.data(), k)));
+  ASSERT_EQ(rec.reference.data.size(), static_cast<std::size_t>(k));
+  const double tol = 32.0 * static_cast<double>(rows > cols ? rows : cols) * kEps * largest(rec.reference.data);
+  EXPECT_TRUE(SpectrumClose(r.s, rec.reference.data, tol, true));
+}
+
+// The two-site blocks a matrix-product-state simulator recorded, one per
+// shape it produced (tests/corpus/lindblad_mps/README.md). They carry no
+// reference spectrum, so the judges are the harness, the screen, and the
+// two kernels' agreement with each other to the absolute tolerance.
+TEST_P(MpsBlocks, BothKernelsAreAcceptedAndAgree) {
+  const autonne::hexfloat::Matrix m = load_matrix(std::string("lindblad_mps/") + GetParam());
+  if (m.rows == 0) return;
+  const int rows = m.rows;
+  const int cols = m.cols;
+  const int k = rows < cols ? rows : cols;
+  const SvdResult jacobi = run_svd(m.data.data(), rows, cols, m.order);
+  const SvdResult bdc = run_svd_bdc(m.data.data(), rows, cols, m.order);
+  ASSERT_TRUE(jacobi.ok);
+  ASSERT_TRUE(bdc.ok);
+  for (const SvdResult* r : {&jacobi, &bdc}) {
+    EXPECT_TRUE(SvdAccepted(autonne::verify::check_svd(m.data.data(), rows, cols, m.order,
+                                                       r->u.data(), r->s.data(), r->v.data(), k)));
+    EXPECT_TRUE(autonne::verify::screen_svd(m.data.data(), rows, cols, m.order, r->u.data(),
+                                            r->s.data(), r->v.data(), k)
+                    .ok());
+  }
+  const double tol = 32.0 * static_cast<double>(rows > cols ? rows : cols) * kEps * largest(jacobi.s);
+  EXPECT_TRUE(SpectrumClose(bdc.s, jacobi.s, tol, true));
 }
 
 TEST_P(EighCorpus, AgreesWithLapackAndPassesHarness) {
@@ -119,6 +179,22 @@ INSTANTIATE_TEST_SUITE_P(Files, SvdCorpus,
                                            "svd_dft16", "svd_random_16x9", "svd_random_9x16",
                                            "svd_random_32x32", "svd_column_scaled_8",
                                            "svd_row_scaled_8", "svd_zero_rows_cols_24"));
+
+INSTANTIATE_TEST_SUITE_P(Files, SvdBdcCorpus,
+                         ::testing::Values("svd_simon36", "svd_simon36_residue", "svd_poison8",
+                                           "svd_dft16", "svd_random_16x9", "svd_random_9x16",
+                                           "svd_random_32x32", "svd_column_scaled_8",
+                                           "svd_row_scaled_8", "svd_zero_rows_cols_24"));
+
+INSTANTIATE_TEST_SUITE_P(Files, MpsBlocks,
+                         ::testing::Values("svd_theta_2x2", "svd_theta_2x8", "svd_theta_4x4",
+                                           "svd_theta_4x16", "svd_theta_8x2", "svd_theta_8x8",
+                                           "svd_theta_8x32", "svd_theta_16x4", "svd_theta_16x16",
+                                           "svd_theta_16x64", "svd_theta_32x8", "svd_theta_32x32",
+                                           "svd_theta_32x128", "svd_theta_64x16",
+                                           "svd_theta_64x64", "svd_theta_64x128",
+                                           "svd_theta_128x32", "svd_theta_128x64",
+                                           "svd_theta_128x128"));
 
 INSTANTIATE_TEST_SUITE_P(Files, EighCorpus,
                          ::testing::Values("eigh_random_24", "eigh_random_64",

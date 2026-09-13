@@ -279,8 +279,9 @@ if(AUTONNE_BUILD_TESTS)
     ${AUTONNE_WARNING_FLAGS} ${AUTONNE_STRICT_FP_FLAGS})
   set_target_properties(autonne_compare PROPERTIES CXX_EXTENSIONS OFF)
 
-  # Every corpus matrix, through both models. The eigh cases are square by
-  # construction; the svd ones need not be.
+  # Every corpus matrix, through both models and, for the SVD cases, through
+  # both kernels. The eigh cases are square by construction; the svd ones
+  # need not be.
   file(GLOB AUTONNE_CORPUS_SVD
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/svd_*.txt)
@@ -288,15 +289,20 @@ if(AUTONNE_BUILD_TESTS)
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/eigh_*.txt)
 
-  foreach(kind svd eigh)
-    if(kind STREQUAL "svd")
-      set(cases ${AUTONNE_CORPUS_SVD})
-    else()
+  foreach(kind svd svd_bdc eigh)
+    if(kind STREQUAL "eigh")
       set(cases ${AUTONNE_CORPUS_EIGH})
+    else()
+      set(cases ${AUTONNE_CORPUS_SVD})
+    endif()
+    if(kind STREQUAL "svd_bdc")
+      set(test_suffix ".bdc")
+    else()
+      set(test_suffix "")
     endif()
     foreach(case_file ${cases})
       get_filename_component(case_name ${case_file} NAME_WE)
-      add_test(NAME fpcrosscheck.${case_name}
+      add_test(NAME fpcrosscheck.${case_name}${test_suffix}
         COMMAND ${CMAKE_COMMAND}
           -DAUTONNE_DUMP_STRICT=$<TARGET_FILE:autonne_dump_strict>
           -DAUTONNE_DUMP_FASTMATH=$<TARGET_FILE:autonne_dump_fastmath>

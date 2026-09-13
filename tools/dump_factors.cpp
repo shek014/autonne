@@ -23,7 +23,7 @@
 // point. Two executables, one input held fixed as a hex-float literal, and a
 // diff of the outputs is the only arrangement that measures the flag.
 //
-// Usage: autonne_dump <corpus-file> <output-file> [svd|eigh]
+// Usage: autonne_dump <corpus-file> <output-file> [svd|svd_bdc|eigh]
 
 #include <complex>
 #include <cstdio>
@@ -46,11 +46,12 @@ int fail(const char* what, const char* detail) {
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    return fail("usage", "autonne_dump <corpus-file> <output-file> [svd|eigh]");
+    return fail("usage", "autonne_dump <corpus-file> <output-file> [svd|svd_bdc|eigh]");
   }
   const std::string in_path = argv[1];
   const std::string out_path = argv[2];
   const bool want_eigh = (argc > 3 && std::strcmp(argv[3], "eigh") == 0);
+  const bool want_bdc = (argc > 3 && std::strcmp(argv[3], "svd_bdc") == 0);
 
   std::ifstream in(in_path);
   if (!in) return fail("cannot open", in_path.c_str());
@@ -87,10 +88,11 @@ int main(int argc, char** argv) {
   std::vector<double> s(static_cast<std::size_t>(k));
   std::vector<std::complex<double>> v(static_cast<std::size_t>(cols) *
                                       static_cast<std::size_t>(k));
-  if (!autonne::svd_thin(m.data.data(), rows, cols, m.order, u.data(), s.data(),
-                         v.data())) {
-    return fail("svd_thin refused", in_path.c_str());
-  }
+  const bool ok = want_bdc ? autonne::svd_thin_bdc(m.data.data(), rows, cols, m.order,
+                                                   u.data(), s.data(), v.data())
+                           : autonne::svd_thin(m.data.data(), rows, cols, m.order, u.data(),
+                                               s.data(), v.data());
+  if (!ok) return fail(want_bdc ? "svd_thin_bdc refused" : "svd_thin refused", in_path.c_str());
   if (!autonne::hexfloat::write_vector(out, s.data(), k, "S")) {
     return fail("write failed", "S");
   }
