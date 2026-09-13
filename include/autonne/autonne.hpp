@@ -18,10 +18,10 @@
 // Callers pass raw buffers; autonne owns no memory that outlives a call, and
 // keeps no state between calls.
 //
-// Both functions are reentrant and safe to call concurrently on distinct
+// Every function is reentrant and safe to call concurrently on distinct
 // buffers: there is no global or static mutable state, and every working
 // array is allocated for the duration of the call. Concurrent calls sharing
-// an output buffer race, as they would anywhere. Neither function reads or
+// an output buffer race, as they would anywhere. No function reads or
 // writes the floating-point environment: no rounding mode is changed, and no
 // exception flag is consulted, so a caller's fenv settings survive a call
 // unchanged.
@@ -66,6 +66,28 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
               MatrixOrder order,
               std::complex<double>* U_out, double* S_out,
               std::complex<double>* V_out);
+
+// Thin singular value decomposition by bidiagonalisation and divide and
+// conquer. Same arguments, same layout of the results, same treatment of
+// structural zeros and of power-of-two scaling, same failure protocol as
+// svd_thin; what differs is the accuracy promised and the cost.
+//
+// Every singular value carries an error of order eps times the largest, so
+// a value far below the largest is correct in absolute terms only: for a
+// matrix with one row scaled by 1e-30, svd_thin returns the singular value
+// that lives in that row to full relative precision, and this function
+// returns it with no digit guaranteed, anywhere from zero to about 1e-16
+// times the largest. No check on the result can tell the two apart, which is
+// why the choice is the caller's and this function has its own name: use
+// svd_thin when the small singular values matter, and this one when they do
+// not and the matrix is large enough for the difference in cost to matter.
+//
+// Returns false under the same conditions as svd_thin, with nothing written
+// to the outputs. Never throws.
+bool svd_thin_bdc(const std::complex<double>* data, int rows, int cols,
+                  MatrixOrder order,
+                  std::complex<double>* U_out, double* S_out,
+                  std::complex<double>* V_out);
 
 // Eigendecomposition of a dense Hermitian complex matrix.
 //

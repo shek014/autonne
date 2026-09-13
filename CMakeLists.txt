@@ -44,6 +44,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # flags. See the note at the top of include/autonne/verify.hpp.
 set(AUTONNE_SOURCES
   src/svd.cpp
+  src/svd_bdc.cpp
   src/eigh.cpp
   src/verify.cpp)
 
@@ -192,6 +193,7 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_api.cpp
     tests/test_svd.cpp
     tests/test_bidiag_dc.cpp
+    tests/test_svd_bdc.cpp
     tests/test_eigh.cpp
     tests/test_corpus.cpp
     tests/test_stress.cpp

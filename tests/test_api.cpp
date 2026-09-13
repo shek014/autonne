@@ -40,12 +40,18 @@ using autonne_test::make_svd_case;
 using autonne_test::poke_bits;
 using autonne_test::run_eigh;
 using autonne_test::run_svd;
+using autonne_test::run_svd_bdc;
 
 // --- success on well-formed input ---------------------------------------------
 
 TEST(Api, SvdThinSucceedsOnValidInput) {
   const auto c = make_svd_case(4, 3, {4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 8);
   EXPECT_TRUE(run_svd(c).ok);
+}
+
+TEST(Api, SvdThinBdcSucceedsOnValidInput) {
+  const auto c = make_svd_case(4, 3, {4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 8);
+  EXPECT_TRUE(run_svd_bdc(c).ok);
 }
 
 TEST(Api, EighSucceedsOnValidInput) {
@@ -84,6 +90,26 @@ TEST(Api, SvdThinRejectsMalformedArguments) {
   for (const Complex& z : v) EXPECT_EQ(z, kSentinel);
 }
 
+TEST(Api, SvdThinBdcRejectsMalformedArguments) {
+  const auto c = make_svd_case(4, 3, {4.0, 2.0, 1.0}, MatrixOrder::ColMajor, 10);
+  std::vector<Complex> u(12, kSentinel);
+  std::vector<double> s(3, kSentinelReal);
+  std::vector<Complex> v(9, kSentinel);
+
+  EXPECT_FALSE(autonne::svd_thin_bdc(nullptr, 4, 3, c.order, u.data(), s.data(), v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), 0, 3, c.order, u.data(), s.data(), v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), 4, 0, c.order, u.data(), s.data(), v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), -4, 3, c.order, u.data(), s.data(), v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), 4, -3, c.order, u.data(), s.data(), v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), 4, 3, c.order, nullptr, s.data(), v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), 4, 3, c.order, u.data(), nullptr, v.data()));
+  EXPECT_FALSE(autonne::svd_thin_bdc(c.m.data(), 4, 3, c.order, u.data(), s.data(), nullptr));
+
+  for (const Complex& z : u) EXPECT_EQ(z, kSentinel);
+  for (const double x : s) EXPECT_EQ(x, kSentinelReal);
+  for (const Complex& z : v) EXPECT_EQ(z, kSentinel);
+}
+
 TEST(Api, EighRejectsMalformedArguments) {
   const auto c = make_eigh_case(4, {1.0, 2.0, 3.0, 4.0}, MatrixOrder::ColMajor, 11);
   std::vector<double> evals(4, kSentinelReal);
@@ -114,6 +140,20 @@ TEST(Api, SvdThinRejectsNonFiniteInputAndLeavesOutputsUntouched) {
   EXPECT_FALSE(run_svd(d).ok);
 }
 
+TEST(Api, SvdThinBdcRejectsNonFiniteInputAndLeavesOutputsUntouched) {
+  auto c = make_svd_case(5, 4, {4.0, 3.0, 2.0, 1.0}, MatrixOrder::RowMajor, 12);
+  poke_bits(c.m[7], kQuietNanBits, bits_of(0.25));
+  const auto r = run_svd_bdc(c);
+  EXPECT_FALSE(r.ok);
+  for (const Complex& z : r.u) EXPECT_EQ(z, kSentinel);
+  for (const double x : r.s) EXPECT_EQ(x, kSentinelReal);
+  for (const Complex& z : r.v) EXPECT_EQ(z, kSentinel);
+
+  auto d = make_svd_case(5, 4, {4.0, 3.0, 2.0, 1.0}, MatrixOrder::ColMajor, 13);
+  poke_bits(d.m[19], bits_of(0.5), kNegativeInfBits);
+  EXPECT_FALSE(run_svd_bdc(d).ok);
+}
+
 TEST(Api, EighRejectsNonFiniteInputAndLeavesOutputsUntouched) {
   auto c = make_eigh_case(4, {-3.0, -0.5, 1.0, 4.0}, MatrixOrder::ColMajor, 14);
   poke_bits(c.a[9], kQuietNanBits, bits_of(0.0));
@@ -138,6 +178,12 @@ TEST(Api, NeverThrows) {
                             nullptr, nullptr);
     (void)autonne::svd_thin(m.data(), -1, -1, MatrixOrder::ColMajor, u.data(),
                             s.data(), v.data());
+    (void)autonne::svd_thin_bdc(m.data(), 1, 1, MatrixOrder::ColMajor, u.data(),
+                                s.data(), v.data());
+    (void)autonne::svd_thin_bdc(nullptr, 0, 0, MatrixOrder::RowMajor, nullptr,
+                                nullptr, nullptr);
+    (void)autonne::svd_thin_bdc(m.data(), -1, -1, MatrixOrder::ColMajor, u.data(),
+                                s.data(), v.data());
     (void)autonne::eigh(m.data(), 1, MatrixOrder::ColMajor, s.data(), u.data());
     (void)autonne::eigh(nullptr, 0, MatrixOrder::RowMajor, nullptr, nullptr);
     (void)autonne::eigh(m.data(), -1, MatrixOrder::ColMajor, s.data(), u.data());
@@ -151,6 +197,12 @@ static_assert(std::is_same_v<decltype(autonne::svd_thin),
                                   MatrixOrder, std::complex<double>*, double*,
                                   std::complex<double>*)>,
               "svd_thin signature drifted from the documented interface");
+
+static_assert(std::is_same_v<decltype(autonne::svd_thin_bdc),
+                             bool(const std::complex<double>*, int, int,
+                                  MatrixOrder, std::complex<double>*, double*,
+                                  std::complex<double>*)>,
+              "svd_thin_bdc signature drifted from the documented interface");
 
 static_assert(std::is_same_v<decltype(autonne::eigh),
                              bool(const std::complex<double>*, int, MatrixOrder,

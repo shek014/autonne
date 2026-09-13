@@ -292,6 +292,22 @@ inline SvdResult run_svd(const SvdCase& c) {
   return run_svd(c.m.data(), c.rows, c.cols, c.order);
 }
 
+// The same through the divide-and-conquer entry point.
+inline SvdResult run_svd_bdc(const Complex* m, int rows, int cols,
+                             MatrixOrder order) {
+  const int k = rows < cols ? rows : cols;
+  SvdResult r;
+  r.u.assign(static_cast<std::size_t>(rows) * static_cast<std::size_t>(k), kSentinel);
+  r.s.assign(static_cast<std::size_t>(k), kSentinelReal);
+  r.v.assign(static_cast<std::size_t>(cols) * static_cast<std::size_t>(k), kSentinel);
+  r.ok = autonne::svd_thin_bdc(m, rows, cols, order, r.u.data(), r.s.data(), r.v.data());
+  return r;
+}
+
+inline SvdResult run_svd_bdc(const SvdCase& c) {
+  return run_svd_bdc(c.m.data(), c.rows, c.cols, c.order);
+}
+
 struct EighResult {
   bool ok = false;
   std::vector<double> evals;   // n
