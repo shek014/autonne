@@ -56,7 +56,8 @@ set(AUTONNE_HEADERS
 
 # Private to the kernels; included relative to src/ and never installed.
 set(AUTONNE_PRIVATE_HEADERS
-  src/detail/kernel_common.hpp)
+  src/detail/kernel_common.hpp
+  src/detail/svd_common.hpp)
 
 # --- shared compile settings -------------------------------------------------
 
