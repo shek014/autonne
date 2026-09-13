@@ -40,6 +40,7 @@ entry_points=(
   'autonne::svd_thin_bdc('
   'autonne::eigh('
   'autonne::verify::check_svd('
+  'autonne::verify::screen_svd('
   'autonne::verify::check_eigh('
 )
 

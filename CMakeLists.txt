@@ -188,6 +188,7 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_fp_bad.cpp
     tests/test_matrix_view.cpp
     tests/test_verify_svd.cpp
+    tests/test_verify_screen.cpp
     tests/test_verify_eigh.cpp
     tests/test_hexfloat.cpp
     tests/test_api.cpp
