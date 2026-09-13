@@ -57,7 +57,8 @@ set(AUTONNE_HEADERS
 # Private to the kernels; included relative to src/ and never installed.
 set(AUTONNE_PRIVATE_HEADERS
   src/detail/kernel_common.hpp
-  src/detail/svd_common.hpp)
+  src/detail/svd_common.hpp
+  src/detail/bidiag_dc.hpp)
 
 # --- shared compile settings -------------------------------------------------
 
@@ -190,6 +191,7 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_hexfloat.cpp
     tests/test_api.cpp
     tests/test_svd.cpp
+    tests/test_bidiag_dc.cpp
     tests/test_eigh.cpp
     tests/test_corpus.cpp
     tests/test_stress.cpp
@@ -205,8 +207,11 @@ if(AUTONNE_BUILD_TESTS)
     set(target autonne_tests_${variant})
 
     add_executable(${target} ${AUTONNE_TEST_SOURCES} ${AUTONNE_SOURCES})
+    # src/ is on the path so that a private kernel header can be tested on
+    # its own, ahead of the public entry point built on it.
     target_include_directories(${target} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
       ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(${target} PRIVATE GTest::gtest_main autonne_warnings)
     target_compile_options(${target} PRIVATE ${ARG_FLAGS})

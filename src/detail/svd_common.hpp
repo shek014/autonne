@@ -82,7 +82,7 @@ struct QrFactors {
 // Column norms are recomputed from scratch at every step rather than
 // downdated: it costs O(m n^2), the same order as the reflections, and it
 // cannot suffer the cancellation that downdating formulas do.
-static void qr_householder(std::vector<Complex>& a, Index m, Index n, bool pivot, QrFactors& f) {
+static inline void qr_householder(std::vector<Complex>& a, Index m, Index n, bool pivot, QrFactors& f) {
   f.m = m;
   f.n = n;
   f.rank = 0;
@@ -170,7 +170,7 @@ static void qr_householder(std::vector<Complex>& a, Index m, Index n, bool pivot
 }
 
 // y (m x cols, column-major) <- Q y, with Q = P_0 P_1 ... P_{rank-1}.
-static void apply_q(const QrFactors& f, std::vector<Complex>& y, Index cols) {
+static inline void apply_q(const QrFactors& f, std::vector<Complex>& y, Index cols) {
   const Index m = f.m;
   for (Index jj = f.rank; jj > 0; --jj) {
     const Index j = jj - 1;
@@ -204,7 +204,7 @@ static void apply_q(const QrFactors& f, std::vector<Complex>& y, Index cols) {
 // of 64 max(rows, cols) eps.
 //
 // Returns false if the sweep limit is reached without convergence.
-static bool jacobi_orthogonalise(std::vector<Complex>& x, Index rows, std::vector<Complex>& v,
+static inline bool jacobi_orthogonalise(std::vector<Complex>& x, Index rows, std::vector<Complex>& v,
                           Index cols, std::vector<bool>& dead) {
   const double tol = std::sqrt(static_cast<double>(rows)) * detail::kernel::unit_roundoff();
   const double floor_v = detail::kernel::column_floor();
@@ -343,7 +343,7 @@ struct CoreResult {
 // on the kept rows and columns, the completion of the zero-value vectors and
 // the scan on the way out, is the same for every kernel and lives here.
 template <typename Core>
-static bool svd_driver(const Complex* data, Index rows, Index cols, MatrixOrder order,
+static inline bool svd_driver(const Complex* data, Index rows, Index cols, MatrixOrder order,
                        Complex* u_out, double* s_out, Complex* v_out, Core&& core) {
   const Index k = rows < cols ? rows : cols;
   if (detail::any_bad(data, static_cast<int>(rows * cols))) return false;
@@ -438,7 +438,7 @@ static bool svd_driver(const Complex* data, Index rows, Index cols, MatrixOrder 
 // the driver is turned into the false return the contract promises. Nothing
 // else in there can throw.
 template <typename Core>
-static bool svd_entry(const std::complex<double>* data, int rows, int cols,
+static inline bool svd_entry(const std::complex<double>* data, int rows, int cols,
                       MatrixOrder order, std::complex<double>* U_out, double* S_out,
                       std::complex<double>* V_out, Core&& core) {
   if (data == nullptr || rows <= 0 || cols <= 0 || U_out == nullptr ||
