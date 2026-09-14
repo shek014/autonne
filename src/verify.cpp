@@ -88,6 +88,34 @@ bool all_finite(const double* v, int n) noexcept {
 // the factor overflows to infinity and every product becomes a NaN, which is
 // reachable for a matrix whose largest component is below 2^-1024. ldexp has
 // no such limit, and scaling by a power of two is exact either way.
+// Complex products written out on the parts.
+//
+// std::complex's operator* carries the C99 Annex G recovery for infinite
+// operands, and under strict floating point -- which this file is compiled
+// with in every variant -- GCC and Clang implement it as a call to __muldc3 on
+// every multiplication. The recovery cannot be needed here: the bit-pattern
+// scan establishes that every operand is finite before any of these loops run,
+// and a non-finite input has already failed its verdict.
+//
+// These compute the same four products and two sums, in the same order, as the
+// operator they replace, so no measured quantity moves by a single bit. It is
+// the call that goes, not the arithmetic. src/detail/kernel_common.hpp does the
+// same for the kernels and explains it at more length; these are separate
+// because that header is private to src/ and verify.cpp is not a kernel.
+std::complex<double> cmul(const std::complex<double>& a,
+                          const std::complex<double>& b) noexcept {
+  return std::complex<double>(a.real() * b.real() - a.imag() * b.imag(),
+                              a.real() * b.imag() + a.imag() * b.real());
+}
+
+// conj(a) * b. Equal bit for bit to b * conj(a): complex multiplication is
+// commutative in the products it forms as well as in value.
+std::complex<double> conj_mul(const std::complex<double>& a,
+                              const std::complex<double>& b) noexcept {
+  return std::complex<double>(a.real() * b.real() + a.imag() * b.imag(),
+                              a.real() * b.imag() - a.imag() * b.real());
+}
+
 double scaled(const double& x, int e) noexcept { return std::ldexp(x, -e); }
 
 std::complex<double> scaled(const std::complex<double>& z, int e) noexcept {
@@ -172,7 +200,7 @@ double orthonormality_residual(const View& x) noexcept {
   for (int c = 0; c < k; ++c) {
     for (int d = 0; d < k; ++d) {
       std::complex<double> g(0.0, 0.0);
-      for (int i = 0; i < n; ++i) g += std::conj(at(x, i, c)) * at(x, i, d);
+      for (int i = 0; i < n; ++i) g += conj_mul(at(x, i, c), at(x, i, d));
       if (c == d) g -= std::complex<double>(1.0, 0.0);
       acc += g.real() * g.real() + g.imag() * g.imag();
     }
@@ -279,8 +307,12 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
     for (int i = 0; i < rows; ++i) {
       std::complex<double> approx(0.0, 0.0);
       for (int t = 0; t < k; ++t) {
-        approx += at(Uv, i, t) * S_scaled[static_cast<std::size_t>(t)] *
-                  std::conj(at(Vv, j, t));
+        // (U * s) is formed first, as the operator form did, so the
+        // products and their order are unchanged.
+        const std::complex<double> u = at(Uv, i, t);
+        const double st = S_scaled[static_cast<std::size_t>(t)];
+        approx += conj_mul(at(Vv, j, t),
+                           std::complex<double>(u.real() * st, u.imag() * st));
       }
       const std::complex<double> d = scaled(at(Mv, i, j), exponent) - approx;
       residual_sq += d.real() * d.real() + d.imag() * d.imag();
@@ -379,7 +411,7 @@ EighReport check_eigh(const std::complex<double>* A, int n, MatrixOrder order,
     for (int i = 0; i < n; ++i) {
       std::complex<double> acc(0.0, 0.0);
       for (int t = 0; t < n; ++t) {
-        acc += scaled(at(Av, i, t), exponent) * at(Qv, t, j);
+        acc += cmul(scaled(at(Av, i, t), exponent), at(Qv, t, j));
       }
       const std::complex<double> d =
           acc - at(Qv, i, j) * lambda_scaled[static_cast<std::size_t>(j)];
