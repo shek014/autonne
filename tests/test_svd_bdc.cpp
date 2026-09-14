@@ -45,11 +45,13 @@ using autonne::verify::SvdReport;
 using autonne::verify::check_svd;
 using autonne_test::Complex;
 using autonne_test::SpectrumClose;
+using autonne_test::SpectrumWithinFactor;
 using autonne_test::SvdAccepted;
 using autonne_test::SvdCase;
 using autonne_test::SvdResult;
 using autonne_test::make_svd_case;
 using autonne_test::random_matrix;
+using autonne_test::run_svd;
 using autonne_test::run_svd_bdc;
 
 constexpr double kEps = std::numeric_limits<double>::epsilon();
@@ -404,6 +406,49 @@ TEST(SvdBdc, ValuesAreAccurateAbsolutely) {
   const double bound = 64.0 * 8 * kEps * 1.0;
   for (std::size_t i = 0; i < spectrum.size(); ++i) {
     EXPECT_NEAR(r.s[i], spectrum[i], bound) << i;
+  }
+}
+
+// The boundary between the two contracts, from the side svd_thin owns. For
+// A = B D with the singular values of B in [0.9, 1.1] and the columns graded
+// over thirty or more decades in shuffled order, svd_thin returns every value
+// within [0.9, 1.1] of its d_j, while svd_thin_bdc is accepted by the harness
+// and meets its absolute bound with values wrong by orders of magnitude
+// (measured: a worst ratio of 7e3 at thirty decades and 4e19 at seventy).
+// Nothing the harness measures can see that, which is why the two kernels
+// have two names. The shuffle is what exposes it: with the grading already
+// in decreasing order the columns arrive sorted by norm, the unpivoted QR
+// behaves like a pivoted one, and the kernels agree to seventy decades.
+//
+// This is the test that fails if svd_thin is ever routed to the
+// divide-and-conquer core. ValuesAreAccurateAbsolutely above is the same
+// contract stated from the other side.
+TEST(SvdBdc, RelativeAccuracyBelongsToSvdThinAlone) {
+  const int n = 8;
+  const std::vector<int> shuffled = {3, 0, 6, 1, 7, 4, 2, 5};
+  for (const double decades : {10.0, 30.0, 70.0}) {
+    std::vector<double> d(static_cast<std::size_t>(n));
+    for (int j = 0; j < n; ++j) {
+      d[static_cast<std::size_t>(j)] =
+          std::pow(10.0, -decades * shuffled[static_cast<std::size_t>(j)] / (n - 1));
+    }
+    std::vector<Complex> m = autonne_test::well_conditioned_matrix(n, 2003);
+    autonne_test::scale_columns(m, n, n, d);
+
+    const SvdResult jacobi = run_svd(m.data(), n, n, MatrixOrder::ColMajor);
+    ASSERT_TRUE(jacobi.ok) << decades << " decades";
+    EXPECT_TRUE(SvdAccepted(check(m.data(), n, n, MatrixOrder::ColMajor, jacobi)))
+        << decades << " decades";
+    EXPECT_TRUE(SpectrumWithinFactor(jacobi.s, d, 0.9, 1.1, true)) << decades << " decades";
+
+    const SvdResult bdc = run_svd_bdc(m.data(), n, n, MatrixOrder::ColMajor);
+    ASSERT_TRUE(bdc.ok) << decades << " decades";
+    EXPECT_TRUE(SvdAccepted(check(m.data(), n, n, MatrixOrder::ColMajor, bdc)))
+        << decades << " decades";
+    // The absolute bound, measured against the spectrum svd_thin returned,
+    // which is within one percent of the truth at every scale.
+    EXPECT_TRUE(SpectrumClose(bdc.s, jacobi.s, 64.0 * n * kEps * jacobi.s[0], true))
+        << decades << " decades";
   }
 }
 

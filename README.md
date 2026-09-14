@@ -112,7 +112,11 @@ or `tests/test_eigh.cpp`, run under both floating-point models. Every claim
 holds for both SVD kernels except relative accuracy, which is `svd_thin`'s and
 `eigh`'s alone: `svd_thin_bdc` promises `|s_i - s_i(true)| <= 64 · max(dimension)
 · eps · s_max` on every value instead, and `tests/test_svd_bdc.cpp` pins exactly
-that bound and nothing sharper.
+that bound and nothing sharper. The same file holds both kernels to their own
+contract on one matrix (columns graded over seventy decades in shuffled order,
+where `svd_thin_bdc` is harness-accepted with values wrong by nineteen orders
+of magnitude), so routing `svd_thin` to the divide-and-conquer core fails the
+suite rather than quietly dropping the guarantee.
 
 - **The harness accepts every factorisation.** `verify::check_svd` and
   `verify::check_eigh` bound the backward error, the orthonormality of every
