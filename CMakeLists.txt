@@ -44,6 +44,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # flags. See the note at the top of include/autonne/verify.hpp.
 set(AUTONNE_SOURCES
   src/svd.cpp
+  src/svd_bdc.cpp
   src/eigh.cpp
   src/verify.cpp)
 
@@ -56,7 +57,9 @@ set(AUTONNE_HEADERS
 
 # Private to the kernels; included relative to src/ and never installed.
 set(AUTONNE_PRIVATE_HEADERS
-  src/detail/kernel_common.hpp)
+  src/detail/kernel_common.hpp
+  src/detail/svd_common.hpp
+  src/detail/bidiag_dc.hpp)
 
 # --- shared compile settings -------------------------------------------------
 
@@ -185,10 +188,13 @@ if(AUTONNE_BUILD_TESTS)
     tests/test_fp_bad.cpp
     tests/test_matrix_view.cpp
     tests/test_verify_svd.cpp
+    tests/test_verify_screen.cpp
     tests/test_verify_eigh.cpp
     tests/test_hexfloat.cpp
     tests/test_api.cpp
     tests/test_svd.cpp
+    tests/test_bidiag_dc.cpp
+    tests/test_svd_bdc.cpp
     tests/test_eigh.cpp
     tests/test_corpus.cpp
     tests/test_stress.cpp
@@ -204,8 +210,11 @@ if(AUTONNE_BUILD_TESTS)
     set(target autonne_tests_${variant})
 
     add_executable(${target} ${AUTONNE_TEST_SOURCES} ${AUTONNE_SOURCES})
+    # src/ is on the path so that a private kernel header can be tested on
+    # its own, ahead of the public entry point built on it.
     target_include_directories(${target} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
       ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(${target} PRIVATE GTest::gtest_main autonne_warnings)
     target_compile_options(${target} PRIVATE ${ARG_FLAGS})
@@ -270,8 +279,9 @@ if(AUTONNE_BUILD_TESTS)
     ${AUTONNE_WARNING_FLAGS} ${AUTONNE_STRICT_FP_FLAGS})
   set_target_properties(autonne_compare PROPERTIES CXX_EXTENSIONS OFF)
 
-  # Every corpus matrix, through both models. The eigh cases are square by
-  # construction; the svd ones need not be.
+  # Every corpus matrix, through both models and, for the SVD cases, through
+  # both kernels. The eigh cases are square by construction; the svd ones
+  # need not be.
   file(GLOB AUTONNE_CORPUS_SVD
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/svd_*.txt)
@@ -279,15 +289,20 @@ if(AUTONNE_BUILD_TESTS)
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/eigh_*.txt)
 
-  foreach(kind svd eigh)
-    if(kind STREQUAL "svd")
-      set(cases ${AUTONNE_CORPUS_SVD})
-    else()
+  foreach(kind svd svd_bdc eigh)
+    if(kind STREQUAL "eigh")
       set(cases ${AUTONNE_CORPUS_EIGH})
+    else()
+      set(cases ${AUTONNE_CORPUS_SVD})
+    endif()
+    if(kind STREQUAL "svd_bdc")
+      set(test_suffix ".bdc")
+    else()
+      set(test_suffix "")
     endif()
     foreach(case_file ${cases})
       get_filename_component(case_name ${case_file} NAME_WE)
-      add_test(NAME fpcrosscheck.${case_name}
+      add_test(NAME fpcrosscheck.${case_name}${test_suffix}
         COMMAND ${CMAKE_COMMAND}
           -DAUTONNE_DUMP_STRICT=$<TARGET_FILE:autonne_dump_strict>
           -DAUTONNE_DUMP_FASTMATH=$<TARGET_FILE:autonne_dump_fastmath>

@@ -16,15 +16,16 @@ matrices in 1915.
 
 ## Status
 
-Both kernels are implemented. The suite -- harness acceptance, exact spectra,
-relative-accuracy bounds, and a frozen corpus cross-checked against LAPACK --
-passes under strict and fast-math floating point on GCC 13/14, Clang 18/22,
+Three entry points are implemented: two thin-SVD kernels and the Hermitian
+eigensolver. The suite (harness acceptance, exact spectra, relative-accuracy
+bounds, and a frozen corpus cross-checked against LAPACK) passes under strict
+and fast-math floating point on GCC 13/14, Clang 18/22,
 MSVC 2022 and AppleClang. The interface is the one below and is not expected
 to move. Measured against Eigen in [Performance](#performance).
 
 ## Scope
 
-Two operations, over `std::complex<double>`:
+Three operations, over `std::complex<double>`:
 
 ```cpp
 enum class MatrixOrder { RowMajor, ColMajor };
@@ -34,6 +35,11 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
               std::complex<double>* U_out, double* S_out,
               std::complex<double>* V_out);
 
+bool svd_thin_bdc(const std::complex<double>* data, int rows, int cols,
+                  MatrixOrder order,
+                  std::complex<double>* U_out, double* S_out,
+                  std::complex<double>* V_out);
+
 bool eigh(const std::complex<double>* data, int n, MatrixOrder order,
           double* evals_out, std::complex<double>* evecs_out);
 ```
@@ -42,6 +48,11 @@ With `k = min(rows, cols)`: `U_out` is `rows` by `k`, `V_out` is `cols` by `k`,
 both column-major, and `S_out` holds `k` singular values in descending order.
 `V` is returned as `V`, not conjugate-transposed. A `false` return means the
 caller should take its fallback route; nothing has been written to the outputs.
+`svd_thin_bdc` takes the same arguments, returns the same layout and fails the
+same way; it differs in what accuracy it promises and what it costs, which is
+the whole of the next section. There is no entry point that chooses between
+the two: nothing a caller can check on the result distinguishes them, so the
+choice has to be made from what the caller knows about the input.
 
 `eigh` returns eigenvalues in ascending order, following the LAPACK convention.
 It decomposes the Hermitian part `(A + A^*)/2` of its input, which for
@@ -65,6 +76,24 @@ with high relative accuracy. `U = Q V_X` and `V = P U_X` are assembled from the
 accumulated rotations, sorted, unscaled, and scanned for non-finite values
 before anything is written.
 
+**`svd_thin_bdc`.** The same frame (structural zeros set aside, power-of-two
+scaling, the scan on the way out), then Householder bidiagonalisation, after an
+unpivoted QR when the block is more than 1.6 times as tall as it is wide. The
+complex bidiagonal's phases are absorbed into two diagonal unitaries so that a
+real non-negative bidiagonal remains, and that is solved by Gu and Eisenstat's
+divide and conquer: a block of order at most eight is solved densely (pivoted
+QR and one-sided Jacobi), a larger one is split at its middle row, and the
+halves are merged through the secular equation, with negligible and repeated
+entries deflated before the solve and the singular vectors rebuilt from the
+values actually computed (Löwner's theorem), which is what keeps them
+orthonormal when two values are close. The reflectors are applied to the
+factors directly on the way back; neither `Q` nor `P` is formed. The
+bidiagonalisation is backward stable in the norm of the whole matrix rather
+than column by column, so every singular value carries an error of order
+`eps · ‖A‖`: absolute accuracy, where `svd_thin` gives relative. On a
+128×128 block it is 2.7 times faster than `svd_thin` on a decaying spectrum
+and no faster on a flat one, where Jacobi needs few sweeps.
+
 **`eigh`.** The Hermitian part is formed with a real diagonal, structurally
 zero rows are set aside, the matrix is scaled by a power of two, and cyclic
 Jacobi is run with the rotation threshold relative to the diagonal
@@ -72,13 +101,22 @@ Jacobi is run with the rotation threshold relative to the diagonal
 eigenvalues of a graded positive definite matrix their relative accuracy. The
 rotations accumulate into `Q`; the matrix is kept exactly Hermitian throughout.
 
-Both are `O(sweeps · n³)` and allocate their workspace on the heap; an
-allocation failure is reported as `false`.
+`svd_thin` and `eigh` are `O(sweeps · n³)`; `svd_thin_bdc` is `O(n³)` with a
+constant that does not depend on the spectrum. All three allocate their
+workspace on the heap; an allocation failure is reported as `false`.
 
 ## What is guaranteed
 
-Every claim below is a test in `tests/test_svd.cpp` or `tests/test_eigh.cpp`,
-run under both floating-point models.
+Every claim below is a test in `tests/test_svd.cpp`, `tests/test_svd_bdc.cpp`
+or `tests/test_eigh.cpp`, run under both floating-point models. Every claim
+holds for both SVD kernels except relative accuracy, which is `svd_thin`'s and
+`eigh`'s alone: `svd_thin_bdc` promises `|s_i - s_i(true)| <= 64 · max(dimension)
+· eps · s_max` on every value instead, and `tests/test_svd_bdc.cpp` pins exactly
+that bound and nothing sharper. The same file holds both kernels to their own
+contract on one matrix (columns graded over seventy decades in shuffled order,
+where `svd_thin_bdc` is harness-accepted with values wrong by nineteen orders
+of magnitude), so routing `svd_thin` to the divide-and-conquer core fails the
+suite rather than quietly dropping the guarantee.
 
 - **The harness accepts every factorisation.** `verify::check_svd` and
   `verify::check_eigh` bound the backward error, the orthonormality of every
@@ -98,7 +136,7 @@ run under both floating-point models.
   same `U` and `V` bit for bit.
 - **Storage order is invisible.** The same logical matrix in row-major and
   column-major order gives identical results bit for bit; so do repeated calls.
-- **Relative accuracy on graded input.** For `A = B D` or `A = D B` with the
+- **Relative accuracy on graded input** (`svd_thin` and `eigh`). For `A = B D` or `A = D B` with the
   singular values of `B` in `[0.9, 1.1]`, every singular value of `A` lands in
   `[0.9, 1.1]` times the matching entry of `D`, tested down to `1e-70`. For
   `H = D B D` with `B` positive definite in the same sense, every eigenvalue
@@ -107,12 +145,15 @@ run under both floating-point models.
   scaled values drop below `eps`.
 - **Agreement with LAPACK.** `tests/corpus` holds fourteen matrices frozen as
   exact hex-float literals (`tools/make_corpus.py`), each with the spectrum
-  numpy's `zgesdd` / `zheevd` computed for it. Every one is factored, judged
-  by the harness, and compared with that reference to LAPACK's own absolute
-  accuracy, in every build variant.
-- **The two floating-point models agree.** The kernel is also built into one
-  small executable per model, both are run on every corpus matrix, and a third
-  program diffs what they wrote. Bit equality is not required and would be the
+  numpy's `zgesdd` / `zheevd` computed for it. Every one is factored (the SVD
+  matrices by both kernels), judged by the harness, and compared with that
+  reference to LAPACK's own absolute accuracy, in every build variant. The
+  nineteen two-site blocks recorded from a matrix-product-state simulation
+  (`tests/corpus/lindblad_mps`) carry no reference; there both kernels must
+  be accepted by the harness and by the screen, and agree with each other.
+- **The two floating-point models agree.** The kernels are also built into one
+  small executable per model, both are run on every corpus matrix through
+  every kernel, and a third program diffs what they wrote. Bit equality is not required and would be the
   wrong test, since `-ffast-math` may reassociate; what is required is that the
   spectra agree to `1e-11` relative and that each singular vector agrees up to
   a phase, with degenerate groups excluded because any unitary mixing inside
@@ -128,6 +169,16 @@ run under both floating-point models.
   build was no less accurate than the strict one. It is a developer tool, not
   a CI test: a failure there is a lead to turn into a fixed case in
   `tests/corpus`.
+- **The screen agrees with the harness.** `verify::screen_svd` gives the
+  harness's verdicts at `O(rows · cols)`: the energy identity and the spectrum
+  checks exactly, the residual and the orthonormality defects through probe
+  vectors whose products estimate the norms the harness computes. It accepts
+  what is correct, from both kernels at every size in the suite and at every
+  scale the harness handles; it rejects each corruption the harness's own tests
+  apply, including the one only a residual can see (two singular vectors
+  exchanged); and over 480 cases drawn from both kernels with each corruption
+  applied, its verdict equals the harness's in every one
+  (`tests/test_verify_screen.cpp`).
 - **Subnormal entries are handled, not stumbled over.** An entry at the bottom
   of the subnormal range beside ordinary ones, or a scaling that drives one
   there, is where a phase computed as `z / |z|` stops being unimodular and a
@@ -165,8 +216,9 @@ bit patterns. The suite is built under strict and fast-math floating point
 (and once more with the hand-rolled accessor path), and every variant must
 pass.
 
-**One definition per entry point.** `svd_thin`, `eigh`, `check_svd` and
-`check_eigh` are compiled in the library, not instantiated from headers. A
+**One definition per entry point.** `svd_thin`, `svd_thin_bdc`, `eigh`,
+`check_svd`, `screen_svd` and `check_eigh` are compiled in the library, not
+instantiated from headers. A
 header-only definition is emitted by every including file and the linker keeps
 one copy per binary without regard to the flags it was built under, so a
 consumer mixing `-ffast-math` and strict files would run whichever copy won the
@@ -188,9 +240,15 @@ rather than quietly shifting a number.
 
 **Accuracy on degenerate and rank-deficient input.** Repeated singular values
 and hard zero blocks are the common case here, not the exception. Correctness on
-such matrices is the primary design target, which is why the kernel is Jacobi
-rather than bidiagonalisation plus QR or divide-and-conquer: rotations keep
-every factor orthonormal by construction, whatever the spectrum does.
+such matrices is the primary design target, which is why the default kernel,
+`svd_thin`, is Jacobi rather than bidiagonalisation plus QR or divide and
+conquer: rotations keep every factor orthonormal by construction, whatever the
+spectrum does. `svd_thin_bdc` reaches the same verdicts by a different route,
+deflation before the secular solve and singular vectors rebuilt from the values
+actually computed, and is held to the same harness on the same matrices,
+including the ones on which Eigen's divide and conquer is rejected. What it
+gives up is the relative accuracy above, which no harness can see, and which
+is why it is a separate name rather than a faster path behind `svd_thin`.
 
 **A comparison between floating-point models has to cross a process boundary.**
 Two variants of the same code linked into one binary do not measure two
@@ -223,31 +281,47 @@ if (!r.ok()) {
 `check_svd` accepts `k < min(rows, cols)` for a truncated slice, comparing the
 residual in amplitude form against `sqrt(discarded) + 64 · max(rows, cols) · eps · ‖M‖_F`.
 
+`check_svd` costs `O(rows · cols · k)`, which at 128×128 is about as long as
+the factorisation itself. `verify::screen_svd` takes the same arguments and
+returns the same verdicts at `O(rows · cols)`: the energy identity exactly, the
+residual and the orthonormality defects estimated through probe vectors with
+entries in `{1, -1, i, -i}`, for which `E ‖X y‖² = ‖X‖_F²`, so a matrix-vector
+product stands in for a matrix product and the estimate is compared with the
+harness's own bound. The residual is probed in the kept subspaces, `M V_k`
+against `U_k S_k` and `M^* U_k` against `V_k S_k`, which is what makes a
+truncated slice screenable as sharply as a full one. Three probes by default;
+a defect the harness would reject is missed only when every probe lands well
+under the norm it estimates, which for a defect spread over many directions
+happens about once in a million and for one aligned with a coordinate
+direction never. At 128×128 the screen takes 0.28 ms against 6 ms for the
+harness. The probe vectors come from a fixed seed, so the same inputs give the
+same report everywhere.
+
 ## Performance
 
 `bench/autonne_bench` (built with `-DAUTONNE_BUILD_BENCHMARKS=ON`, which
 fetches Eigen 3.4.0 for that one target) times a thin SVD of a `2b × 2b`
-matrix with a shaped spectrum, median of eleven calls, and passes every result
-through the harness. Clang 22, `-O3`, strict floating point, one core of an
-otherwise idle desktop; milliseconds:
+matrix with a shaped spectrum, median of fifteen calls, and passes every result
+through the harness. Ryzen 9 7900X, Clang 22.1.8, `-O3`, strict floating
+point, one core of an otherwise idle desktop; milliseconds:
 
-| n   | spectrum       | autonne | Eigen BDCSVD  | Eigen JacobiSVD |
-| --- | -------------- | ------: | ------------: | --------------: |
-| 8   | decaying       |   0.008 |         0.015 |           0.015 |
-| 16  | decaying       |   0.039 |         0.038 |           0.117 |
-| 32  | decaying       |   0.30  |         0.24  |           0.95  |
-| 64  | decaying       |   1.91  |         1.61  |           7.97  |
-| 128 | decaying       |  13.9   |         8.58  |          72.4   |
-| 8   | flat           |   0.005 |         0.025 |           0.025 |
-| 16  | flat           |   0.030 |         0.038 |           0.25  |
-| 32  | flat           |   0.17  |         0.18  |           2.19  |
-| 64  | flat           |   0.83  |         1.34  |          19.3   |
-| 128 | flat           |   5.10  |         7.41  |         195     |
-| 8   | rank-deficient |   0.008 |         0.021 |           0.019 |
-| 16  | rank-deficient |   0.041 | 0.027 (rejected) |        0.13  |
-| 32  | rank-deficient |   0.29  |         0.18  |           1.10  |
-| 64  | rank-deficient |   2.01  |         1.35  |           7.50  |
-| 128 | rank-deficient |  13.3   |  7.56 (rejected) |       75.0   |
+| n   | spectrum       | autonne | autonne bdc | Eigen BDCSVD    | Eigen JacobiSVD |
+| --- | -------------- | ------: | ----------: | --------------: | --------------: |
+| 8   | decaying       |   0.007 |       0.007 |           0.015 |           0.015 |
+| 16  | decaying       |   0.039 |       0.025 |           0.030 |           0.118 |
+| 32  | decaying       |   0.26  |       0.12  |           0.16  |           1.06  |
+| 64  | decaying       |   1.69  |       0.69  |           1.14  |           8.07  |
+| 128 | decaying       |  12.4   |       4.67  |           6.60  |          88.8   |
+| 8   | flat           |   0.003 |       0.004 |           0.026 |           0.026 |
+| 16  | flat           |   0.016 |       0.018 |           0.018 |           0.26  |
+| 32  | flat           |   0.089 |       0.087 |           0.081 |           2.23  |
+| 64  | flat           |   0.56  |       0.55  |           0.84  |          18.9   |
+| 128 | flat           |   4.35  |       4.39  |           5.70  |         229     |
+| 8   | rank-deficient |   0.006 |       0.006 |           0.019 |           0.019 |
+| 16  | rank-deficient |   0.037 |       0.022 |           0.019 |           0.12  |
+| 32  | rank-deficient |   0.23  |       0.093 |           0.083 |           1.16  |
+| 64  | rank-deficient |   1.65  |       0.57  | 0.87 (rejected) |           7.63  |
+| 128 | rank-deficient |  11.8   |       4.50  |           5.84  |          88.2   |
 
 Run-to-run variation on a desktop is around twenty percent, so treat a
 difference smaller than that as noise; the ordering is stable across runs.
@@ -255,33 +329,55 @@ difference smaller than that as noise; the ordering is stable across runs.
 "Decaying" is a geometric spectrum over sixteen decades, "flat" is fully
 degenerate, "rank-deficient" is half the spectrum degenerate and half exactly
 zero. "Rejected" means the harness refused Eigen's factorisation: on the
-rank-deficient input the divide-and-conquer result fails the backward-error
-bound (residual 1.35 times the bound at 128×128), and on the 36×36 Simon coset
-matrix it returns a spectrum with sum of squares 0.98611 against a norm of 1,
-which is the defect the spec describes. autonne's factorisations were accepted
-in every row.
+rank-deficient input at 64×64 the divide-and-conquer result carries non-finite
+values, and on the 36×36 Simon coset matrix it returns a spectrum with sum of
+squares 0.98611 against a norm of 1, which is the defect the spec describes.
+Which rows are rejected moves with the machine: an earlier run of the same
+benchmark on a different desktop, same compiler and flags, rejected the 16 and
+128 rows instead. `svd_thin` was accepted in every row on both machines, and
+`svd_thin_bdc` in every row here.
 
-Against the spec's bar -- the faster of Eigen's two methods -- autonne is
-faster or equal up to 32×32 on every shape, faster on flat spectra at every
-size, and within a factor of about 1.7 on decaying and rank-deficient input at
-128×128. The cost is dominated by Jacobi sweeps, each `O(n³)`; the pivoted QR
-that precedes them is a few milliseconds at 128 and accounts for most of the
-flat-spectrum time, where one or two sweeps suffice.
+Against the spec's bar, the faster of Eigen's two methods: `svd_thin_bdc` is
+faster from 64×64 up on every spectrum, by 1.3 to 1.4 times at 128×128, and
+within noise of or up to 1.2 times behind Eigen's divide and conquer at 16 and
+32 on the flat and rank-deficient spectra, where that method solves the whole
+block densely and this one already splits it. `svd_thin` is faster than either
+Eigen method at 8×8, and faster or within noise at every size on the flat
+spectrum; on the decaying spectrum it is within a factor of 1.9 of the faster
+Eigen method at every size, and on the rank-deficient one within 2.0 except at
+32×32, where it is 2.8 times slower. Its cost is the Jacobi sweeps, each
+`O(n³)`, which the spectrum decides; `svd_thin_bdc`'s cost is three quarters
+bidiagonalisation and back-transformation and one quarter the divide and
+conquer itself, and the spectrum barely moves it.
 
-Which sizes matter is a separate question, and one the consuming project has
-open as
+Which sizes matter is a question about the caller's workload, and for one
+workload there is a measurement. `tests/corpus/lindblad_mps` holds the
+two-site blocks a matrix-product-state simulator recorded while running a
+24-qubit brickwork circuit at a bond cap of 64: 276 splits over 19 shapes,
+one representative matrix per shape, with the counts in that directory's
+README. `autonne_bench --mps tests/corpus/lindblad_mps` times every method on
+every shape and weights each by its count; the four heaviest shapes and the
+weighted total, same machine, milliseconds:
+
+| block   | count | autonne | autonne bdc | Eigen BDCSVD | Eigen JacobiSVD |
+| ------- | ----: | ------: | ----------: | -----------: | --------------: |
+| 16×16   |    27 |   0.049 |       0.025 |        0.029 |           0.145 |
+| 32×32   |    24 |   0.32  |       0.14  |        0.21  |           1.30  |
+| 64×64   |    21 |   2.19  |       0.78  |        1.39  |          12.1   |
+| 128×128 |    33 |  17.6   |       5.05  |        7.24  |         259     |
+| all 276 |   276 | 667     |     200     |      290     |        8930     |
+
+Every shape was accepted by the harness for every method on this run. The
+saturated 128×128 blocks are an eighth of the splits and three quarters of the
+time, which is why the workload total follows the 128 column of the first
+table. The broader question of which sizes a consuming project reaches at all
+is open as
 [verycareful/lindblad#100](https://github.com/verycareful/lindblad/issues/100).
-Its comparison corpus builds every scaling circuit with three layers of
-nearest-neighbour two-qubit gates, and each cut is crossed by one such gate
-per layer, so the Schmidt rank across any cut is bounded by `2³ = 8` and the
-matrices reaching this path are at most 16×16. That is a bound from reading
-the generator, not a measurement of what the circuits reach. If it holds, the
-sizes that actually run are the ones where autonne is ahead, and the 128×128
-column describes a path that corpus never enters.
 
 `eigh` is a plain cyclic Jacobi and pays for its accuracy guarantees: at
-128×128 it takes about 45 ms against 3 ms for Eigen's tridiagonalisation-based
-solver, and roughly ten times longer at every size. A tridiagonal path would
+128×128 it takes about 20 ms against 2.5 ms for Eigen's tridiagonalisation-based
+solver, and between three and eight times longer at the smaller sizes. A
+tridiagonal path would
 close that gap for callers that do not need relative accuracy on graded input;
 it is not implemented.
 

@@ -51,6 +51,7 @@ using autonne_test::random_hermitian;
 using autonne_test::random_matrix;
 using autonne_test::run_eigh;
 using autonne_test::run_svd;
+using autonne_test::run_svd_bdc;
 
 autonne::verify::SvdReport judge(const std::vector<Complex>& m, int rows, int cols,
                                  MatrixOrder order, const SvdResult& r) {
@@ -85,7 +86,12 @@ std::vector<double> shaped_spectrum(int k, int rank, int style, Lcg& rng) {
   return s;
 }
 
-TEST(Stress, SvdOverShapesRanksAndSpectra) {
+// The three SVD sweeps take the kernel as a function, so that both entry
+// points run the same cases: everything here is a harness verdict, which
+// both kernels promise alike.
+using SvdKernel = SvdResult (*)(const Complex*, int, int, MatrixOrder);
+
+void svd_over_shapes_ranks_and_spectra(SvdKernel kernel) {
   int cases = 0;
   for (int rows = 1; rows <= 9; ++rows) {
     for (int cols = 1; cols <= 9; ++cols) {
@@ -99,7 +105,7 @@ TEST(Stress, SvdOverShapesRanksAndSpectra) {
           const MatrixOrder order =
               (seed % 2 == 0) ? MatrixOrder::ColMajor : MatrixOrder::RowMajor;
           const auto c = make_svd_case(rows, cols, spectrum, order, seed + 7000);
-          const SvdResult r = run_svd(c);
+          const SvdResult r = kernel(c.m.data(), c.rows, c.cols, c.order);
           ASSERT_TRUE(r.ok) << "case " << cases << ": " << rows << "x" << cols
                             << " rank " << rank << " style " << style;
           EXPECT_TRUE(SvdAccepted(judge(c.m, rows, cols, order, r)))
@@ -116,7 +122,7 @@ TEST(Stress, SvdOverShapesRanksAndSpectra) {
 // The same sweep on matrices pushed to the ends of the exponent range, where
 // a squared norm would overflow or underflow if anything were computed the
 // naive way.
-TEST(Stress, SvdAtTheEndsOfTheExponentRange) {
+void svd_at_the_ends_of_the_exponent_range(SvdKernel kernel) {
   for (const int exponent : {-1000, -700, -300, 300, 700, 1000}) {
     const double factor = std::ldexp(1.0, exponent);
     for (int shape = 0; shape < 6; ++shape) {
@@ -125,7 +131,7 @@ TEST(Stress, SvdAtTheEndsOfTheExponentRange) {
       const std::uint64_t seed = static_cast<std::uint64_t>(1000 + exponent + shape);
       std::vector<Complex> m = random_matrix(rows, cols, seed);
       for (Complex& z : m) z *= factor;
-      const SvdResult r = run_svd(m.data(), rows, cols, MatrixOrder::ColMajor);
+      const SvdResult r = kernel(m.data(), rows, cols, MatrixOrder::ColMajor);
       ASSERT_TRUE(r.ok) << "2^" << exponent << " " << rows << "x" << cols;
       EXPECT_TRUE(SvdAccepted(judge(m, rows, cols, MatrixOrder::ColMajor, r)))
           << "2^" << exponent << " " << rows << "x" << cols;
@@ -135,7 +141,7 @@ TEST(Stress, SvdAtTheEndsOfTheExponentRange) {
 
 // Matrices with entries at wildly different magnitudes in the same column,
 // which is where a naive norm loses the small ones entirely.
-TEST(Stress, SvdOnMixedMagnitudeEntries) {
+void svd_on_mixed_magnitude_entries(SvdKernel kernel) {
   for (int trial = 0; trial < 40; ++trial) {
     const int n = 2 + (trial % 7);
     Lcg rng(static_cast<std::uint64_t>(9000 + trial));
@@ -144,11 +150,21 @@ TEST(Stress, SvdOnMixedMagnitudeEntries) {
       const double u = 0.5 * (rng.next_uniform() + 1.0);
       z = rng.next_complex() * std::pow(10.0, -60.0 * u);
     }
-    const SvdResult r = run_svd(m.data(), n, n, MatrixOrder::ColMajor);
+    const SvdResult r = kernel(m.data(), n, n, MatrixOrder::ColMajor);
     ASSERT_TRUE(r.ok) << "trial " << trial;
     EXPECT_TRUE(SvdAccepted(judge(m, n, n, MatrixOrder::ColMajor, r))) << "trial " << trial;
   }
 }
+
+TEST(Stress, SvdOverShapesRanksAndSpectra) { svd_over_shapes_ranks_and_spectra(run_svd); }
+TEST(Stress, SvdAtTheEndsOfTheExponentRange) { svd_at_the_ends_of_the_exponent_range(run_svd); }
+TEST(Stress, SvdOnMixedMagnitudeEntries) { svd_on_mixed_magnitude_entries(run_svd); }
+
+TEST(Stress, SvdBdcOverShapesRanksAndSpectra) { svd_over_shapes_ranks_and_spectra(run_svd_bdc); }
+TEST(Stress, SvdBdcAtTheEndsOfTheExponentRange) {
+  svd_at_the_ends_of_the_exponent_range(run_svd_bdc);
+}
+TEST(Stress, SvdBdcOnMixedMagnitudeEntries) { svd_on_mixed_magnitude_entries(run_svd_bdc); }
 
 TEST(Stress, EighOverSizesAndSpectra) {
   int cases = 0;

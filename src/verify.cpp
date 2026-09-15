@@ -32,6 +32,8 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "autonne/detail/fp_bits.hpp"
@@ -211,6 +213,31 @@ double orthonormality_residual(const View& x) noexcept {
 constexpr int min_int(int a, int b) noexcept { return a < b ? a : b; }
 constexpr int max_int(int a, int b) noexcept { return a > b ? a : b; }
 
+// The spectrum verdicts, which stand on their own: a NaN in S fails them
+// here rather than being inherited from a NaN elsewhere in U or V. Both
+// operands of the ordering step are guarded while they are still values in
+// memory: under -ffast-math their difference is a computed value the
+// compiler may assume finite, so a guard applied after the subtraction
+// proves nothing.
+void spectrum_verdicts(const double* S, int k, double order_slack, bool& nonnegative,
+                       bool& descending) noexcept {
+  bool nonneg = true;
+  bool desc = true;
+  for (int t = 0; t < k; ++t) {
+    if (fp_bad(S[t]) || S[t] < 0.0) nonneg = false;
+    if (t + 1 < k) {
+      if (fp_bad(S[t]) || fp_bad(S[t + 1])) {
+        desc = false;
+      } else {
+        const double step = S[t + 1] - S[t];
+        if (!within(step, order_slack)) desc = false;
+      }
+    }
+  }
+  nonnegative = nonneg;
+  descending = desc;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -265,27 +292,7 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
     energy_S += v * v;
   }
 
-  // The spectrum verdicts stand on their own: a NaN in S fails them here
-  // rather than being inherited from a NaN elsewhere in U or V. Both operands
-  // of the ordering step are guarded while they are still values in memory:
-  // under -ffast-math their difference is a computed value the compiler may
-  // assume finite, so a guard applied after the subtraction proves nothing.
-  const double order_slack = tol.spectrum_factor * eps * s_max;
-  bool nonneg = true;
-  bool desc = true;
-  for (int t = 0; t < k; ++t) {
-    if (fp_bad(S[t]) || S[t] < 0.0) nonneg = false;
-    if (t + 1 < k) {
-      if (fp_bad(S[t]) || fp_bad(S[t + 1])) {
-        desc = false;
-      } else {
-        const double step = S[t + 1] - S[t];
-        if (!within(step, order_slack)) desc = false;
-      }
-    }
-  }
-  r.nonnegative = nonneg;
-  r.descending = desc;
+  spectrum_verdicts(S, k, tol.spectrum_factor * eps * s_max, r.nonnegative, r.descending);
 
   const double energy_defect = energy_S - energy_M;
   const double energy_bound = tol.spectrum_factor * dim * eps * energy_M;
@@ -332,6 +339,406 @@ SvdReport check_svd(const std::complex<double>* M, int rows, int cols,
   r.ortho_bound = tol.ortho_factor * dim * eps;
   r.u_orthonormal = r.finite && within(r.u_ortho_residual, r.ortho_bound);
   r.v_orthonormal = r.finite && within(r.v_ortho_residual, r.ortho_bound);
+
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// Thin / truncated SVD, screened
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The probe vectors' bit source: SplitMix64, a few lines with one word of
+// state and a fixed, platform-independent output, which is all a screen
+// whose verdict must be repeatable needs from a generator.
+struct SplitMix64 {
+  std::uint64_t state;
+  std::uint64_t next() noexcept {
+    state += 0x9E3779B97F4A7C15ull;
+    std::uint64_t z = state;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+  }
+};
+
+// The seed every call starts from. Digits of pi; nothing about the value
+// matters except that it never changes.
+constexpr std::uint64_t kScreenSeed = 0x243F6A8885A308D3ull;
+
+// Fills x with entries from {1, -1, i, -i}, two bits per entry, so that
+// ||x||^2 == n exactly and E |r^* x|^2 == ||r||^2 for any fixed r: the
+// entries are independent with zero mean and unit second moment, which is
+// all the identity needs.
+void rademacher_fill(SplitMix64& g, std::complex<double>* x, int n) noexcept {
+  std::uint64_t bits = 0;
+  int left = 0;
+  for (int j = 0; j < n; ++j) {
+    if (left == 0) {
+      bits = g.next();
+      left = 32;
+    }
+    switch (bits & 3u) {
+      case 0:
+        x[j] = std::complex<double>(1.0, 0.0);
+        break;
+      case 1:
+        x[j] = std::complex<double>(-1.0, 0.0);
+        break;
+      case 2:
+        x[j] = std::complex<double>(0.0, 1.0);
+        break;
+      default:
+        x[j] = std::complex<double>(0.0, -1.0);
+        break;
+    }
+    bits >>= 2;
+    --left;
+  }
+}
+
+// Every product below is written on the parts. This file is built strict,
+// and under strict floating point std::complex's operator* is a call to
+// __muldc3 on every multiplication; the screen exists to be cheap, so it
+// cannot pay that.
+
+// out (n) = X^* x (X is n x k column-major, x has n entries): out_t = x_t^* x.
+template <typename View>
+void adjoint_times(const View& X, const std::complex<double>* x,
+                   std::complex<double>* out) noexcept {
+  const int n = rows_of(X);
+  const int k = cols_of(X);
+  for (int t = 0; t < k; ++t) {
+    double ar = 0.0;
+    double ai = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const std::complex<double>& e = at(X, i, t);
+      ar += e.real() * x[i].real() + e.imag() * x[i].imag();
+      ai += e.real() * x[i].imag() - e.imag() * x[i].real();
+    }
+    out[t] = std::complex<double>(ar, ai);
+  }
+}
+
+// out (n) = X w (X is n x k column-major, w has k entries), column by column.
+template <typename View>
+void times(const View& X, const std::complex<double>* w, std::complex<double>* out) noexcept {
+  const int n = rows_of(X);
+  const int k = cols_of(X);
+  for (int i = 0; i < n; ++i) out[i] = std::complex<double>(0.0, 0.0);
+  for (int t = 0; t < k; ++t) {
+    const double wr = w[t].real();
+    const double wi = w[t].imag();
+    for (int i = 0; i < n; ++i) {
+      const std::complex<double>& e = at(X, i, t);
+      out[i] += std::complex<double>(e.real() * wr - e.imag() * wi,
+                                     e.real() * wi + e.imag() * wr);
+    }
+  }
+}
+
+// out (rows) = 2^-e M x and out (cols) = 2^-e M^* z for M in either storage
+// order, with the inner loop running along the storage so that each pass
+// over M is contiguous: a row-major M is a column-major M^T, and each
+// product is arranged so that the transposed view is what it multiplies by.
+//
+// The scaling is check_svd's, and where it is applied matters. Moving it
+// onto the vector is exact and costs nothing per element, but a vector of
+// unit entries scaled by 2^1024 is infinite, and a matrix below the normal
+// range needs exactly that exponent. So the vector carries the scaling
+// while |e| is moderate, and beyond that the elements are scaled one by one
+// as check_svd scales them, which is what keeps such a matrix measurable at
+// all. The limit is set by the energy pass below, which sums unscaled
+// squares under the same rule: elements are under 2^e, their squares under
+// 2^2e, and the sum has at most 2^32 terms, so it stays finite while
+// 2e + 32 < 1024. The products are safer than that: a probe entry is at
+// most sqrt(k) in modulus, so scaled by 2^-e it is normal well past this
+// limit, and each product with an element under 2^e is of order one.
+constexpr int kVectorScalingLimit = 480;
+
+// ||2^-e M||_F^2 over the buffer, which holds the same elements in either
+// order, so one linear pass serves both. Under the limit the squares are
+// summed as they are and the sum scaled once; beyond it each element is
+// scaled first, as check_svd's pass does throughout. A term whose square
+// underflows on the unscaled path is at least 2^-112 below the largest term
+// relative to it, and contributes nothing the sum could measure.
+double energy_ordered(const std::complex<double>* M, int rows, int cols, int exponent) noexcept {
+  const std::size_t count = static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols);
+  double acc = 0.0;
+  if (exponent >= -kVectorScalingLimit && exponent <= kVectorScalingLimit) {
+    for (std::size_t i = 0; i < count; ++i) {
+      acc += M[i].real() * M[i].real() + M[i].imag() * M[i].imag();
+    }
+    return std::ldexp(acc, -2 * exponent);
+  }
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::complex<double> z = scaled(M[i], exponent);
+    acc += z.real() * z.real() + z.imag() * z.imag();
+  }
+  return acc;
+}
+
+template <bool kScaleElements>
+void times_ordered_impl(const std::complex<double>* M, int rows, int cols, MatrixOrder order,
+                        int exponent, const std::complex<double>* x,
+                        std::complex<double>* out) noexcept {
+  auto load = [exponent](const std::complex<double>& e) noexcept {
+    return kScaleElements ? scaled(e, exponent) : e;
+  };
+  if (order == MatrixOrder::ColMajor) {
+    const auto Mv = autonne::detail::col_major(M, rows, cols);
+    for (int i = 0; i < rows; ++i) out[i] = std::complex<double>(0.0, 0.0);
+    for (int j = 0; j < cols; ++j) {
+      const double xr = x[j].real();
+      const double xi = x[j].imag();
+      for (int i = 0; i < rows; ++i) {
+        const std::complex<double> e = load(at(Mv, i, j));
+        out[i] += std::complex<double>(e.real() * xr - e.imag() * xi,
+                                       e.real() * xi + e.imag() * xr);
+      }
+    }
+    return;
+  }
+  const auto Mt = autonne::detail::col_major(M, cols, rows);
+  for (int i = 0; i < rows; ++i) {
+    double ar = 0.0;
+    double ai = 0.0;
+    for (int j = 0; j < cols; ++j) {
+      const std::complex<double> e = load(at(Mt, j, i));
+      ar += e.real() * x[j].real() - e.imag() * x[j].imag();
+      ai += e.real() * x[j].imag() + e.imag() * x[j].real();
+    }
+    out[i] = std::complex<double>(ar, ai);
+  }
+}
+
+template <bool kScaleElements>
+void adjoint_times_ordered_impl(const std::complex<double>* M, int rows, int cols,
+                                MatrixOrder order, int exponent, const std::complex<double>* z,
+                                std::complex<double>* out) noexcept {
+  auto load = [exponent](const std::complex<double>& e) noexcept {
+    return kScaleElements ? scaled(e, exponent) : e;
+  };
+  if (order == MatrixOrder::ColMajor) {
+    const auto Mv = autonne::detail::col_major(M, rows, cols);
+    for (int j = 0; j < cols; ++j) {
+      double ar = 0.0;
+      double ai = 0.0;
+      for (int i = 0; i < rows; ++i) {
+        const std::complex<double> e = load(at(Mv, i, j));
+        ar += e.real() * z[i].real() + e.imag() * z[i].imag();
+        ai += e.real() * z[i].imag() - e.imag() * z[i].real();
+      }
+      out[j] = std::complex<double>(ar, ai);
+    }
+    return;
+  }
+  // M^* z = conj(M^T conj(z)): multiply the transposed view by conj(z)
+  // column by column and conjugate the result.
+  const auto Mt = autonne::detail::col_major(M, cols, rows);
+  for (int j = 0; j < cols; ++j) out[j] = std::complex<double>(0.0, 0.0);
+  for (int i = 0; i < rows; ++i) {
+    const double zr = z[i].real();
+    const double zi = -z[i].imag();
+    for (int j = 0; j < cols; ++j) {
+      const std::complex<double> e = load(at(Mt, j, i));
+      out[j] += std::complex<double>(e.real() * zr - e.imag() * zi, e.real() * zi + e.imag() * zr);
+    }
+  }
+  for (int j = 0; j < cols; ++j) out[j] = std::conj(out[j]);
+}
+
+// The two products with the scaling placed as described above. `x` and `z`
+// are scaled in place on the fast path, so they are inputs the caller is
+// done with.
+void times_ordered(const std::complex<double>* M, int rows, int cols, MatrixOrder order,
+                   int exponent, std::complex<double>* x, std::complex<double>* out) noexcept {
+  if (exponent >= -kVectorScalingLimit && exponent <= kVectorScalingLimit) {
+    for (int j = 0; j < cols; ++j) x[j] = scaled(x[j], exponent);
+    times_ordered_impl<false>(M, rows, cols, order, 0, x, out);
+  } else {
+    times_ordered_impl<true>(M, rows, cols, order, exponent, x, out);
+  }
+}
+
+void adjoint_times_ordered(const std::complex<double>* M, int rows, int cols, MatrixOrder order,
+                           int exponent, std::complex<double>* z,
+                           std::complex<double>* out) noexcept {
+  if (exponent >= -kVectorScalingLimit && exponent <= kVectorScalingLimit) {
+    for (int i = 0; i < rows; ++i) z[i] = scaled(z[i], exponent);
+    adjoint_times_ordered_impl<false>(M, rows, cols, order, 0, z, out);
+  } else {
+    adjoint_times_ordered_impl<true>(M, rows, cols, order, exponent, z, out);
+  }
+}
+
+double norm_of(const std::complex<double>* x, int n) noexcept {
+  double acc = 0.0;
+  for (int i = 0; i < n; ++i) acc += x[i].real() * x[i].real() + x[i].imag() * x[i].imag();
+  return std::sqrt(acc);
+}
+
+// ||X^* (X y) - y|| for a probe y with k entries: an estimate of
+// ||X^* X - I||_F. `work` needs n entries, `back` k.
+template <typename View>
+double ortho_probe(const View& X, const std::complex<double>* y, std::complex<double>* work,
+                   std::complex<double>* back) noexcept {
+  const int k = cols_of(X);
+  times(X, y, work);
+  adjoint_times(X, work, back);
+  for (int t = 0; t < k; ++t) back[t] -= y[t];
+  return norm_of(back, k);
+}
+
+}  // namespace
+
+SvdScreenReport screen_svd(const std::complex<double>* M, int rows, int cols,
+                           MatrixOrder order, const std::complex<double>* U,
+                           const double* S, const std::complex<double>* V, int k,
+                           const Tolerances& tol, int probes) {
+  SvdScreenReport r;
+  r.rows = rows;
+  r.cols = cols;
+  r.k = k;
+  r.probes = probes;
+
+  const int full_k = min_int(rows, cols);
+  if (rows <= 0 || cols <= 0 || k <= 0 || k > full_k || probes <= 0 || M == nullptr ||
+      U == nullptr || S == nullptr || V == nullptr) {
+    return r;  // inputs_valid stays false; every verdict stays false
+  }
+  r.inputs_valid = true;
+  r.truncated = k < full_k;
+
+  const auto Mv = autonne::detail::ordered(M, rows, cols, order);
+  const auto Uv = autonne::detail::col_major(U, rows, k);
+  const auto Vv = autonne::detail::col_major(V, cols, k);
+
+  r.finite = all_finite(Uv) && all_finite(S, k) && all_finite(Vv);
+
+  const double eps = tol.eps;
+  const double dim = static_cast<double>(max_int(rows, cols));
+
+  // Measured on the input scaled by an exact power of two, as check_svd is;
+  // see scale_exponent, and times_ordered for where the scaling is applied
+  // in the products.
+  const double m_max = max_component(Mv);
+  const double s_max = max_component(S, k);
+  const int exponent = scale_exponent(m_max > s_max ? m_max : s_max);
+
+  const double energy_M = energy_ordered(M, rows, cols, exponent);
+  const double norm_M_scaled = std::sqrt(energy_M);
+  r.norm_M = std::ldexp(norm_M_scaled, exponent);
+
+  std::vector<double> S_scaled(static_cast<std::size_t>(k));
+  double energy_S = 0.0;
+  for (int t = 0; t < k; ++t) {
+    const double v = scaled(S[t], exponent);
+    S_scaled[static_cast<std::size_t>(t)] = v;
+    energy_S += v * v;
+  }
+
+  spectrum_verdicts(S, k, tol.spectrum_factor * eps * s_max, r.nonnegative, r.descending);
+
+  const double energy_defect = energy_S - energy_M;
+  const double energy_bound = tol.spectrum_factor * dim * eps * energy_M;
+  const double energy_defect_abs = std::fabs(energy_defect);
+  r.energy_ok = r.truncated ? within(energy_defect, energy_bound)
+                            : within(energy_defect_abs, energy_bound);
+  r.energy_defect = std::ldexp(energy_defect, 2 * exponent);
+  r.energy_bound = std::ldexp(energy_bound, 2 * exponent);
+
+  const double discarded = (energy_M > energy_S) ? (energy_M - energy_S) : 0.0;
+  r.discarded_energy = std::ldexp(discarded, 2 * exponent);
+
+  // The probes. A residual probe draws y with k entries and forms both
+  //
+  //   M_s (V y) - U (S_s y)      and      M_s^* (U y) - V (S_s y),
+  //
+  // with M_s and S_s the scaled matrix and spectrum, as two matrix-vector
+  // products with M and two with the factors. For a correct factorisation
+  // M V_k = U_k S_k and M^* U_k = V_k S_k hold to rounding whatever k is,
+  // so the truncated part of M never enters: the probes measure the
+  // residual's error part alone, where the whole residual would carry the
+  // discarded energy with a realisation-to-realisation spread of order one
+  // for a low-rank discard. When k = min(rows, cols) one of V and U is
+  // square unitary and the matching probe is exactly ||R x|| for the
+  // harness's R = M - U S V^*, so the estimate is of the harness's own
+  // residual; when V (or U) is merely orthonormal to the ortho bound the
+  // two differ by at most s_max times that bound, inside the harness's
+  // margin. Each orthonormality probe forms X^* (X y) - y. The worst
+  // estimate over the probes is what is compared with the bound.
+  const std::size_t sr = static_cast<std::size_t>(rows);
+  const std::size_t sc = static_cast<std::size_t>(cols);
+  const std::size_t sk = static_cast<std::size_t>(k);
+  const std::size_t longest = sr > sc ? sr : sc;
+  std::vector<std::complex<double>> y(sk);
+  std::vector<std::complex<double>> w(sk);
+  std::vector<std::complex<double>> x(sc);
+  std::vector<std::complex<double>> z(sr);
+  std::vector<std::complex<double>> lhs(longest);
+  std::vector<std::complex<double>> rhs(longest);
+  std::vector<std::complex<double>> back(sk);
+
+  // Worst over the probes, with a non-finite estimate poisoning the worst
+  // for good: a NaN here means the input holds one (M is never scanned, as
+  // in check_svd), and the verdict must be false with the cause visible.
+  auto take = [](double& worst, double value) noexcept {
+    if (fp_bad(worst)) return;
+    if (fp_bad(value)) {
+      worst = std::numeric_limits<double>::quiet_NaN();
+      return;
+    }
+    if (value > worst) worst = value;
+  };
+
+  SplitMix64 g{kScreenSeed};
+  double worst_residual = 0.0;
+  double worst_u = 0.0;
+  double worst_v = 0.0;
+  for (int p = 0; p < probes; ++p) {
+    rademacher_fill(g, y.data(), k);
+    for (int t = 0; t < k; ++t) {
+      const double st = S_scaled[static_cast<std::size_t>(t)];
+      w[static_cast<std::size_t>(t)] =
+          std::complex<double>(st * y[static_cast<std::size_t>(t)].real(),
+                               st * y[static_cast<std::size_t>(t)].imag());
+    }
+    times(Vv, y.data(), x.data());
+    times_ordered(M, rows, cols, order, exponent, x.data(), lhs.data());
+    times(Uv, w.data(), rhs.data());
+    for (int i = 0; i < rows; ++i) lhs[static_cast<std::size_t>(i)] -= rhs[static_cast<std::size_t>(i)];
+    const double right = norm_of(lhs.data(), rows);
+
+    times(Uv, y.data(), z.data());
+    adjoint_times_ordered(M, rows, cols, order, exponent, z.data(), lhs.data());
+    times(Vv, w.data(), rhs.data());
+    for (int j = 0; j < cols; ++j) lhs[static_cast<std::size_t>(j)] -= rhs[static_cast<std::size_t>(j)];
+    const double left = norm_of(lhs.data(), cols);
+
+    take(worst_residual, right);
+    take(worst_residual, left);
+
+    rademacher_fill(g, y.data(), k);
+    take(worst_u, ortho_probe(Uv, y.data(), lhs.data(), back.data()));
+    rademacher_fill(g, y.data(), k);
+    take(worst_v, ortho_probe(Vv, y.data(), lhs.data(), back.data()));
+  }
+
+  // The harness adds sqrt(discarded) to this bound because it measures the
+  // whole residual; the probes above measure only the part the truncation
+  // does not account for, so the bound here is the error term alone.
+  const double backward_bound = tol.backward_factor * dim * eps * norm_M_scaled;
+  r.backward_ok = r.finite && within(worst_residual, backward_bound);
+  r.residual_estimate = std::ldexp(worst_residual, exponent);
+  r.backward_bound = std::ldexp(backward_bound, exponent);
+
+  r.u_ortho_estimate = worst_u;
+  r.v_ortho_estimate = worst_v;
+  r.ortho_bound = tol.ortho_factor * dim * eps;
+  r.u_orthonormal = r.finite && within(worst_u, r.ortho_bound);
+  r.v_orthonormal = r.finite && within(worst_v, r.ortho_bound);
 
   return r;
 }
