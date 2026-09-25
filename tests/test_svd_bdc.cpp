@@ -409,6 +409,47 @@ TEST(SvdBdc, ValuesAreAccurateAbsolutely) {
   }
 }
 
+// Disabled: this is the open defect in #16, recorded so the case lives in the
+// repository rather than in an issue comment. Delete the DISABLED_ prefix when
+// it is fixed.
+//
+// svd_thin_bdc returns false on a block whose nonzero singular values are all
+// exactly equal and whose remaining values are exactly zero -- the spectrum an
+// MPS two-site block has in its exact regime, which is how lindblad found it.
+// The decline is the finiteness scan in the driver, not a failure to converge:
+// merge() in detail/bidiag_dc.hpp returns true having written non-finite
+// entries into its singular vectors, with the values themselves all finite and
+// essentially right. svd_thin accepts the same block.
+//
+// The trigger is exact: the same rank with distinct nonzero values, or with
+// nonzero values a relative 1e-13 apart, or at full rank with no zeros at all,
+// is factorised without complaint. It needs exactly repeated values and exact
+// zeros together, and it reproduces on GCC and Clang from -O0 to -O3 with and
+// without fast-math, so it is not a rounding boundary.
+TEST(SvdBdc, DISABLED_AcceptsExactlyDegenerateRankDeficientBlocks) {
+  const int rows = 27;
+  const int cols = 81;
+  const int k = rows < cols ? rows : cols;
+  const int rank = 14;
+
+  std::vector<double> spectrum(static_cast<std::size_t>(k), 0.0);
+  for (int i = 0; i < rank; ++i) spectrum[static_cast<std::size_t>(i)] = 1.0;
+
+  const SvdCase c = make_svd_case(rows, cols, spectrum, MatrixOrder::ColMajor, 1);
+
+  // svd_thin factorises it, which is what makes the decline a defect rather
+  // than a property of the input.
+  const SvdResult jac = run_svd(c);
+  ASSERT_TRUE(jac.ok);
+  ASSERT_TRUE(SvdAccepted(check(c, jac)));
+
+  const SvdResult r = run_svd_bdc(c);
+  EXPECT_TRUE(r.ok) << "svd_thin_bdc declined a block svd_thin accepts";
+  if (!r.ok) return;
+  EXPECT_TRUE(SvdAccepted(check(c, r)));
+  EXPECT_TRUE(SpectrumClose(r.s, c.s, 64.0 * cols * kEps * 1.0, true));
+}
+
 // The boundary between the two contracts, from the side svd_thin owns. For
 // A = B D with the singular values of B in [0.9, 1.1] and the columns graded
 // over thirty or more decades in shuffled order, svd_thin returns every value
