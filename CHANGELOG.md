@@ -10,6 +10,23 @@ consumer pinned to `0.2` will not silently accept an installed `0.3`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `svd_thin_bdc` returned `false` on finite blocks whose nonzero singular
+  values were exactly equal and whose remaining values were exactly zero, the
+  spectrum a matrix-product-state two-site block has in its exact regime
+  (#16). The decline was the finiteness scan catching NaN singular vectors:
+  when deflation collapsed a run of equal values into one representative, the
+  secular problem left behind had a single term with a tiny `z`, and its
+  closed-form root offset `hypot(d, z) - d` rounded to exactly zero, so the
+  vector formulas divided zero by zero. The same cancellation had a quieter
+  face when `z` was a little larger (about `1e-7` of the value): the offset
+  came out a few percent wrong, the vectors were finite and orthonormal, and
+  the kernel returned `true` with a residual of `1e-9` against a bound of
+  `1e-12`, which only `check_svd` caught. The offset is now formed as
+  `z^2 / (hypot(d, z) + d)`, which is exact to rounding. The singular values
+  were correct throughout. `svd_thin` was never affected.
+
 ## [0.3.0] - 2026-09-15
 
 ### Added

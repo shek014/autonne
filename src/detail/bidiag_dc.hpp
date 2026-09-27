@@ -516,8 +516,15 @@ static inline bool secular_roots(const double* d, const double* z, Index p,
     SecularRoot& r = roots[i];
     if (p == 1) {
       // f = 1 + z^2 / (d^2 - sigma^2): sigma^2 = d^2 + z^2, in closed form.
+      // The offset is what the vector formulas divide by, so it is formed as
+      // z^2 / (sigma + d), which is exact to rounding, and not as
+      // hypot(d, z) - d, which is exactly zero once |z| is below
+      // sqrt(eps) d: a run of equal singular values deflated to one
+      // representative arrives here with exactly such a z, and a zero tau
+      // makes zhat zero over a zero denominator. The two-step form keeps
+      // the quotient in the normal range where z^2 alone would not be.
       r.origin = 0;
-      r.tau = std::hypot(d[0], z[0]) - d[0];
+      r.tau = z[0] * (z[0] / (std::hypot(d[0], z[0]) + d[0]));
       r.sigma = d[0] + r.tau;
       r.delta.assign(1, -r.tau);
       r.w.assign(1, (d[0] + d[0]) + r.tau);
