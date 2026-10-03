@@ -31,6 +31,7 @@
 #include <limits>
 #include <vector>
 
+#include "autonne/detail/fp_bits.hpp"
 #include "autonne/verify.hpp"
 #include "detail/bidiag_dc.hpp"
 #include "report_matchers.hpp"
@@ -323,6 +324,59 @@ TEST(BidiagDc, SingleTermSecularRootIsInClosedForm) {
   std::vector<SecularRoot> roots;
   ASSERT_TRUE(secular_roots(d.data(), z.data(), 1, roots));
   EXPECT_NEAR(roots[0].sigma, 1.0, 4.0 * kEps);
+}
+
+// The single-term root when z is small against d: sigma rounds to d, but
+// the offset tau = sigma - d is z^2 / (sigma + d) and must come out to
+// relative accuracy, because the vector formulas divide by it. Formed as
+// hypot(d, z) - d it carries the rounding of sigma, which is a few percent
+// of tau at z = 1e-7 and all of it below z ~ 1e-8, where it is exactly
+// zero and everything built on it is 0 / 0. This is the merge #16 reaches:
+// a run of equal singular values collapsed to one representative whose
+// combined z is tiny.
+TEST(BidiagDc, SingleTermSecularRootKeepsATinyOffset) {
+  const double d = 0.99999999999999922;
+  for (const double z : {1e-6, 1e-7, 1e-8, 7.766075e-10, 1e-12}) {
+    std::vector<SecularRoot> roots;
+    ASSERT_TRUE(secular_roots(&d, &z, 1, roots)) << "z = " << z;
+    EXPECT_GT(roots[0].tau, 0.0) << "z = " << z;
+    // sigma^2 = d^2 + z^2 is tau (2 d + tau) = z^2, which the offset must
+    // satisfy to rounding rather than to the rounding of sigma.
+    EXPECT_NEAR(roots[0].tau * ((d + d) + roots[0].tau), z * z, 4.0 * kEps * z * z)
+        << "z = " << z;
+    EXPECT_EQ(roots[0].delta[0], -roots[0].tau) << "z = " << z;
+    EXPECT_EQ(roots[0].sigma, d + roots[0].tau) << "z = " << z;
+  }
+}
+
+// The smallest bidiagonal whose merge is that single-term problem. Split at
+// row 1, the left block [1, e0] has singular value hypot(1, e0) = 1 to
+// rounding, the right block [1] has singular value 1, and alpha = d[1] = 0
+// sends no weight to the rowless column. The two equal values deflate into
+// one representative carrying z = e1, so the secular problem has one term
+// with a tiny z. Before the fix the vectors came out with a residual of
+// 1e-9 at e = 1e-7 and as NaN from 1e-8 down, while the values were finite
+// and right throughout.
+TEST(BidiagDc, EqualValuesWithATinyCouplingHaveAccurateVectors) {
+  for (const double coupling : {1e-6, 1e-7, 1e-8, 1e-9, 1e-12}) {
+    Bidiagonal b;
+    b.d = {1.0, 0.0, 1.0};
+    b.e = {coupling, coupling};
+    const Solved r = solve(b, 2);
+    ASSERT_TRUE(r.ok) << "coupling = " << coupling;
+    // Read as bit patterns: std::isfinite is folded to true under -ffast-math.
+    EXPECT_FALSE(autonne::detail::any_bad(r.U.data(), static_cast<int>(r.U.size())))
+        << "coupling = " << coupling;
+    EXPECT_FALSE(autonne::detail::any_bad(r.V.data(), static_cast<int>(r.V.size())))
+        << "coupling = " << coupling;
+    EXPECT_TRUE(autonne_test::SvdAccepted(judge(b, r))) << "coupling = " << coupling;
+    // B B^T is diag(1 + c^2, [c^2, c; c, 1]), so the values are hypot(1, c)
+    // twice and zero.
+    const double top = std::hypot(1.0, coupling);
+    EXPECT_NEAR(r.s[0], top, value_bound(b)) << "coupling = " << coupling;
+    EXPECT_NEAR(r.s[1], top, value_bound(b)) << "coupling = " << coupling;
+    EXPECT_LE(r.s[2], value_bound(b)) << "coupling = " << coupling;
+  }
 }
 
 }  // namespace

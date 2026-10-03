@@ -409,6 +409,75 @@ TEST(SvdBdc, ValuesAreAccurateAbsolutely) {
   }
 }
 
+// The defect in #16, kept as the case lindblad found it by rather than only
+// in the issue, because the construction is easy to get wrong.
+//
+// svd_thin_bdc returned false on a block whose nonzero singular values are
+// all exactly equal and whose remaining values are exactly zero -- the
+// spectrum an MPS two-site block has in its exact regime. The decline was
+// the finiteness scan in the driver, not a failure to converge: merge() in
+// detail/bidiag_dc.hpp returned true having written non-finite entries into
+// its singular vectors, with the values themselves all finite and
+// essentially right. svd_thin accepts the same block.
+//
+// The trigger is exact: the same rank with distinct nonzero values, or with
+// nonzero values a relative 1e-13 apart, or at full rank with no zeros at all,
+// is factorised without complaint. It needs exactly repeated values and exact
+// zeros together, and it reproduces on GCC and Clang from -O0 to -O3 with and
+// without fast-math, so it is not a rounding boundary. The cause was the
+// single-term secular root's offset hypot(d, z) - d cancelling to zero; the
+// core-level cases are in test_bidiag_dc.cpp.
+TEST(SvdBdc, AcceptsExactlyDegenerateRankDeficientBlocks) {
+  const int rows = 27;
+  const int cols = 81;
+  const int k = rows < cols ? rows : cols;
+  const int rank = 14;
+
+  std::vector<double> spectrum(static_cast<std::size_t>(k), 0.0);
+  for (int i = 0; i < rank; ++i) spectrum[static_cast<std::size_t>(i)] = 1.0;
+
+  const SvdCase c = make_svd_case(rows, cols, spectrum, MatrixOrder::ColMajor, 1);
+
+  // svd_thin factorises it, which is what makes the decline a defect rather
+  // than a property of the input.
+  const SvdResult jac = run_svd(c);
+  ASSERT_TRUE(jac.ok);
+  ASSERT_TRUE(SvdAccepted(check(c, jac)));
+
+  const SvdResult r = run_svd_bdc(c);
+  EXPECT_TRUE(r.ok) << "svd_thin_bdc declined a block svd_thin accepts";
+  if (!r.ok) return;
+  EXPECT_TRUE(SvdAccepted(check(c, r)));
+  EXPECT_TRUE(SpectrumClose(r.s, c.s, 64.0 * cols * kEps * 1.0, true));
+}
+
+// The same spectrum at every rank, because which ranks trip the merge is
+// structured rather than scattered (for 27 it was 14; for 81, 24 and 45) and
+// depends on which sub-problem is left with a single secular term. The
+// defect had a second face at other ranks and seeds: finite, orthonormal
+// vectors with a residual of 1e-9 against a bound of 1e-12, returned as
+// true and rejected only by the harness. Both are held here.
+TEST(SvdBdc, AcceptsEveryRankOfAnExactlyDegenerateSpectrum) {
+  for (const auto& shape : {std::pair<int, int>{27, 27}, {27, 81}, {32, 32}}) {
+    const int rows = shape.first;
+    const int cols = shape.second;
+    const int k = rows < cols ? rows : cols;
+    for (int rank = 1; rank <= k; ++rank) {
+      std::vector<double> spectrum(static_cast<std::size_t>(k), 0.0);
+      for (int i = 0; i < rank; ++i) spectrum[static_cast<std::size_t>(i)] = 1.0;
+      for (std::uint64_t seed = 1; seed <= 3; ++seed) {
+        const SvdCase c = make_svd_case(rows, cols, spectrum, MatrixOrder::ColMajor, seed);
+        const SvdResult r = run_svd_bdc(c);
+        ASSERT_TRUE(r.ok) << rows << "x" << cols << " rank " << rank << " seed " << seed;
+        EXPECT_TRUE(SvdAccepted(check(c, r)))
+            << rows << "x" << cols << " rank " << rank << " seed " << seed;
+        EXPECT_TRUE(SpectrumClose(r.s, c.s, 64.0 * cols * kEps * 1.0, true))
+            << rows << "x" << cols << " rank " << rank << " seed " << seed;
+      }
+    }
+  }
+}
+
 // The boundary between the two contracts, from the side svd_thin owns. For
 // A = B D with the singular values of B in [0.9, 1.1] and the columns graded
 // over thirty or more decades in shuffled order, svd_thin returns every value
