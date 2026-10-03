@@ -10,6 +10,8 @@ consumer pinned to `0.2` will not silently accept an installed `0.3`.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-03
+
 ### Fixed
 
 - `svd_thin_bdc` returned `false` on finite blocks whose nonzero singular
@@ -132,6 +134,7 @@ was installable.
   cannot be reassociated by flags that say nothing about the factorisation
   under test.
 
-[Unreleased]: https://github.com/shek014/autonne/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/shek014/autonne/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/shek014/autonne/releases/tag/v0.3.1
 [0.3.0]: https://github.com/shek014/autonne/releases/tag/v0.3.0
 [0.2.0]: https://github.com/shek014/autonne/releases/tag/v0.2.0
