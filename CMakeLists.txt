@@ -95,8 +95,20 @@ endif()
 # the finiteness guards exist precisely because -ffast-math lets a compiler
 # assume NaN and infinity away, and a guard that only survives strict mode is
 # not a guard.
+#
+# Strict includes contraction. -fno-fast-math leaves GCC at its default
+# -ffp-contract=fast, and once a consumer's -march brings FMA in, GCC fuses
+# the vector body and the scalar fallback of a loop differently. Loops it
+# versions for possible aliasing then pick between the two at run time by
+# how far apart the buffers are, so the same input gives different bits
+# depending on where the heap put them (#20). Clang's default fuses within an
+# expression only, which is the same in both forms, but still makes an FMA
+# build differ from one without. With contraction off, every multiply and add
+# rounds on its own and the result is a function of the input bits alone,
+# whatever -march the library is built under. MSVC's /fp:strict already
+# does not contract.
 if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
-  set(AUTONNE_STRICT_FP_FLAGS -fno-fast-math)
+  set(AUTONNE_STRICT_FP_FLAGS -fno-fast-math -ffp-contract=off)
   set(AUTONNE_FAST_FP_FLAGS -ffast-math)
 elseif(MSVC)
   set(AUTONNE_STRICT_FP_FLAGS /fp:strict)
@@ -313,6 +325,77 @@ if(AUTONNE_BUILD_TESTS)
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fp_crosscheck.cmake)
     endforeach()
   endforeach()
+
+  # --- bit-for-bit agreement across targets ------------------------------------
+  #
+  # Within the strict model the result must not depend on the instruction set
+  # the library was built for, nor on whether a loop ran vectorised. The
+  # second is what makes a call independent of heap layout: a loop versioned
+  # for possible aliasing runs its vector body or its scalar fallback
+  # depending on how far apart two buffers are, so the two must agree to the
+  # bit (#20). autonne's own build has no -march, and so no FMA to contract,
+  # which is why the rest of the suite cannot see this; a consumer that
+  # builds it for its own target can. So the strict dump is built twice more
+  # for x86-64-v3 (which brings FMA in), once vectorised and once not, and
+  # all three must write identical files on every corpus matrix. That is a
+  # comparison of bytes, not of tolerances.
+  #
+  # It needs an x86-64 host that can run x86-64-v3 code. MSVC is left out:
+  # its /fp:strict does not contract in the first place.
+  set(AUTONNE_TEST_FMA_TARGET OFF)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$"
+     AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"
+     AND NOT CMAKE_CROSSCOMPILING)
+    include(CheckCXXSourceRuns)
+    check_cxx_source_runs([=[
+      int main() {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") ? 0 : 1;
+      }]=] AUTONNE_HOST_RUNS_X86_64_V3)
+    if(AUTONNE_HOST_RUNS_X86_64_V3)
+      set(AUTONNE_TEST_FMA_TARGET ON)
+    endif()
+  endif()
+
+  if(AUTONNE_TEST_FMA_TARGET)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      set(AUTONNE_NO_VECTORIZE_FLAGS -fno-tree-vectorize)
+    else()
+      set(AUTONNE_NO_VECTORIZE_FLAGS -fno-vectorize -fno-slp-vectorize)
+    endif()
+    autonne_add_dump_variant(strict_fma
+      FLAGS ${AUTONNE_STRICT_FP_FLAGS} -march=x86-64-v3)
+    autonne_add_dump_variant(strict_fma_scalar
+      FLAGS ${AUTONNE_STRICT_FP_FLAGS} -march=x86-64-v3 ${AUTONNE_NO_VECTORIZE_FLAGS})
+
+    foreach(kind svd svd_bdc eigh)
+      if(kind STREQUAL "eigh")
+        set(cases ${AUTONNE_CORPUS_EIGH})
+      else()
+        set(cases ${AUTONNE_CORPUS_SVD})
+      endif()
+      if(kind STREQUAL "svd_bdc")
+        set(test_suffix ".bdc")
+      else()
+        set(test_suffix "")
+      endif()
+      foreach(case_file ${cases})
+        get_filename_component(case_name ${case_file} NAME_WE)
+        add_test(NAME fpbitwise.${case_name}${test_suffix}
+          COMMAND ${CMAKE_COMMAND}
+            -DAUTONNE_DUMP_STRICT=$<TARGET_FILE:autonne_dump_strict>
+            -DAUTONNE_DUMP_FMA=$<TARGET_FILE:autonne_dump_strict_fma>
+            -DAUTONNE_DUMP_FMA_SCALAR=$<TARGET_FILE:autonne_dump_strict_fma_scalar>
+            -DAUTONNE_INPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/${case_file}
+            -DAUTONNE_KIND=${kind}
+            -DAUTONNE_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/fpbitwise
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fp_bitwise.cmake)
+      endforeach()
+    endforeach()
+  else()
+    message(STATUS "autonne: bit-for-bit comparison across targets not built "
+                   "(needs GCC or Clang on an x86-64-v3 host)")
+  endif()
 endif()
 
 # --- benchmark ---------------------------------------------------------------
