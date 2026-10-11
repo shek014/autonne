@@ -159,6 +159,14 @@ suite rather than quietly dropping the guarantee.
   a phase, with degenerate groups excluded because any unitary mixing inside
   one is a correct answer. Measured divergence is around `1e-14` on the spectra
   and `1e-8` on the vectors.
+- **The strict model gives the same bits under any `-march`.** The strict build
+  turns floating-point contraction off (`-ffp-contract=off`), so an FMA target
+  cannot fuse a loop's vector body and its scalar fallback differently, and
+  the output does not depend on the `-march` the library is built under, on
+  vectorisation, or on where the heap puts its buffers. On an x86-64 host that
+  can run it, the strict dump is built twice more for `x86-64-v3`, vectorised
+  and not, and all three must write identical files on every corpus matrix.
+  This is promised for the strict model only: `-ffast-math` may reassociate.
 - **Agreement with LAPACK beyond the frozen set.** `tools/lapack_sweep.py`
   draws matrices nobody chose -- arbitrary shapes, columns graded over thirty
   decades, exact rank deficiency down to the zero matrix, spectra repeated

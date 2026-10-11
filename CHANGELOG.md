@@ -10,6 +10,24 @@ consumer pinned to `0.2` will not silently accept an installed `0.3`.
 
 ## [Unreleased]
 
+### Fixed
+
+- The output of the kernels, `svd_thin_bdc` above all, could depend on heap
+  layout when GCC built the library for a target with FMA, as a consumer does
+  with `-march=native` (#20). `-fno-fast-math` left GCC at
+  `-ffp-contract=fast`, which fused the vector body and the scalar fallback of
+  a loop differently, and loops versioned for possible aliasing chose between
+  the two at run time by how far apart their buffers were. On blocks with a
+  degenerate spectrum that was enough to return a different, equally valid,
+  basis for the same input. The strict flags now include
+  `-ffp-contract=off` for GCC and Clang, and also cover `src/verify.cpp`.
+  Within the strict model the result no longer depends on the `-march` the
+  library is built under or on vectorisation, which a new `fpbitwise` test
+  checks on every corpus matrix. x86-64 builds with no `-march` give the same
+  bits as before. With FMA available
+  the kernels are a few percent slower: 2.5% to 6.6% across the shapes
+  measured in #20.
+
 ## [0.3.1] - 2026-10-03
 
 ### Fixed
