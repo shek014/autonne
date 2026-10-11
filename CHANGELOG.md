@@ -10,6 +10,8 @@ consumer pinned to `0.2` will not silently accept an installed `0.3`.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-11
+
 ### Fixed
 
 - The output of the kernels, `svd_thin_bdc` above all, could depend on heap
@@ -24,9 +26,8 @@ consumer pinned to `0.2` will not silently accept an installed `0.3`.
   Within the strict model the result no longer depends on the `-march` the
   library is built under or on vectorisation, which a new `fpbitwise` test
   checks on every corpus matrix. x86-64 builds with no `-march` give the same
-  bits as before. With FMA available
-  the kernels are a few percent slower: 2.5% to 6.6% across the shapes
-  measured in #20.
+  bits as before. With FMA available the kernels are a few percent slower:
+  2.5% to 6.6% across the shapes measured in #20.
 
 ## [0.3.1] - 2026-10-03
 
@@ -152,7 +153,8 @@ was installable.
   cannot be reassociated by flags that say nothing about the factorisation
   under test.
 
-[Unreleased]: https://github.com/shek014/autonne/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/shek014/autonne/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/shek014/autonne/releases/tag/v0.3.2
 [0.3.1]: https://github.com/shek014/autonne/releases/tag/v0.3.1
 [0.3.0]: https://github.com/shek014/autonne/releases/tag/v0.3.0
 [0.2.0]: https://github.com/shek014/autonne/releases/tag/v0.2.0
